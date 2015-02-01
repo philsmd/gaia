@@ -14,7 +14,9 @@ MockIcon.prototype = MockTemplateIcon.prototype = {
   remove: function mi_remove() {
   },
 
-  update: function mi_update() {
+  update: function mi_update(descriptor, app) {
+    this.descriptor = descriptor;
+    this.app = app;
   },
 
   getWidth: function mi_getWidth() {
@@ -31,6 +33,21 @@ MockIcon.prototype = MockTemplateIcon.prototype = {
 
   getUID: function mi_getUID() {
     return '1';
+  },
+
+  render: function mi_render() {
+    var span = document.createElement('span');
+    span.dataset.isIcon = true;
+    span.style.width = span.style.height = '10px';
+    return span;
+  },
+
+  getName: function mi_getName() {
+    return this.descriptor.name;
+  },
+
+  setName: function mi_setName(value) {
+    this.descriptor.name = value;
   }
 };
 

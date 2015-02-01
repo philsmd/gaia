@@ -2,7 +2,7 @@
 dump('======== browser-helper: content.js loaded ========\n')
 
 function debug(str) {
-  dump('browser-helper (frame-script): ' + str + '\n');
+  //dump('browser-helper (frame-script): ' + str + '\n');
 }
 
 let CC = Components.Constructor;
@@ -12,19 +12,21 @@ let Cu = Components.utils;
 let Cr = Components.results;
 
 Cu.import('resource://gre/modules/Services.jsm');
+Cu.import('resource://gre/modules/Keyboard.jsm');
 
 // Various helpers coming from /b2g/chrome/content/shell.js
 function getContentWindow() {
   return content;
 }
 
-function sendChromeEvent(details) {
+function sendChromeEvent(details, type) {
+  type = type || 'mozChromeEvent';
   let content = getContentWindow();
   details = details || {};
 
   let event = content.document.createEvent('CustomEvent');
-  event.initCustomEvent('mozChromeEvent', true, true,
-                        ObjectWrapper.wrap(details, content));
+  event.initCustomEvent(type, true, true,
+                        Cu.cloneInto(details, content));
   content.dispatchEvent(event);
 }
 
@@ -32,22 +34,22 @@ function sendChromeEvent(details) {
 // Copy of /b2g/chrome/content/shell.js
 Cu.import('resource://gre/modules/Webapps.jsm');
 Cu.import('resource://gre/modules/AppsUtils.jsm');
-Cu.import('resource://gre/modules/ObjectWrapper.jsm');
 
 Services.obs.addObserver(function onLaunch(subject, topic, data) {
   let json = JSON.parse(data);
-  DOMApplicationRegistry.getManifestFor(json.origin, function(aManifest) {
+
+  DOMApplicationRegistry.getManifestFor(json.manifestURL).then((aManifest) => {
     if (!aManifest)
       return;
 
-    let manifest = new ManifestHelper(aManifest, json.origin);
+    let manifest = new ManifestHelper(aManifest, json.origin,
+      json.manifestURL);
     let data = {
-      'type': 'webapps-launch',
       'timestamp': json.timestamp,
       'url': manifest.fullLaunchPath(json.startPoint),
       'manifestURL': json.manifestURL
     };
-    sendChromeEvent(data);
+    sendChromeEvent(data, 'webapps-launch');
   });
 }, 'webapps-launch', false);
 
@@ -60,13 +62,12 @@ Services.obs.addObserver(function onSystemMessage(subject, topic, data) {
 
   let origin = Services.io.newURI(msg.manifest, null, null).prePath;
   sendChromeEvent({
-    type: 'open-app',
     url: msg.uri,
     manifestURL: msg.manifest,
     isActivity: (msg.type == 'activity'),
     target: msg.target,
     expectingSystemMessage: true
-  });
+  }, 'open-app');
 }, 'system-messages-open-app', false);
 
 Services.obs.addObserver(function(aSubject, aTopic, aData) {
@@ -163,3 +164,24 @@ SettingsListener.observe('language.current', 'en-US', function(value) {
     });
   }
 });
+
+/**
+ * This code comes from b2g/chrome/content/shell.js
+ * For now just the keyboard stuff, should copy everything over at some point
+ */
+getContentWindow().addEventListener('mozContentEvent', function(evt) {
+  let detail = evt.detail;
+  debug('XXX FIXME : Got a mozContentEvent: ' + detail.type + "\n");
+
+  switch(detail.type) {
+    case 'inputmethod-update-layouts':
+      KeyboardHelper.handleEvent(detail);
+      break;
+  }
+});
+
+let KeyboardHelper = {
+  handleEvent: function keyboard_handleEvent(aMessage) {
+    Keyboard.setLayouts(aMessage.layouts);
+  }
+};

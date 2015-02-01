@@ -11,40 +11,79 @@ ul {
 }
 
 ul li {
+  -moz-box-sizing: border-box;
   position: relative;
+  margin: 0 1.5rem;
   border-bottom: 0.1rem solid #e6e6e3;
   color: #000;
-  -moz-box-sizing: border-box;
-  min-height: 6rem;
+}
+
+ul+ul li:first-child {
+  border-top: 0.1rem solid #e6e6e3;
+}
+
+ul li:last-child {
+  border-bottom: none;
 }
 
 ul li.sound-setting {
   min-height: 7.9rem;
 }
 
+ul li label:not([for]) {
+  background: none;
+}
+
 ul li > a,
-ul li > span {
-  display: block;
+ul li > span,
+ul li > small,
+ul li > label > span,
+ul li > label > small {
   text-decoration: none;
   outline: 0;
   color: #000;
   -moz-box-sizing: border-box;
-  height: 6rem;
   font-size: 1.9rem;
-  line-height: 6rem;
   padding: 0 3rem;
+  margin: 0 -1.5rem;
 }
 
-ul li.active,
-ul li:not(.disabled) > small + a:active,
-ul li:not(.disabled) > a[href]:active,
-ul li:not(.disabled) > small + a:focus,
-ul li:not(.disabled) > a[href]:focus {
+ul li,
+ul li > a,
+ul li > label {
+  min-height: 6rem;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
+ul li > a,
+ul li > label {
+  min-height: 6rem;
+  padding-top: 0.5rem;
+  padding-bottom: 0.5rem;
+}
+
+ul li[hidden] {
+  display: none;
+}
+
+ul li > a > span {
+  pointer-events: none;
+}
+
+ul li.active a,
+ul li.active span,
+ul li:not([aria-disabled="true"]) > small + a:active,
+ul li:not([aria-disabled="true"]) > a[href]:active,
+ul li:not([aria-disabled="true"]) > small + a:focus,
+ul li:not([aria-disabled="true"]) > a[href]:focus {
   background-color: #b2f2ff;
   color: #222;
 }
 
-ul li.disabled > a {
+ul li[aria-disabled="true"] > a,
+ul li[aria-disabled="true"] > p {
   color: #797e80;
   opacity: 0.6;
   pointer-events: none;
@@ -52,7 +91,7 @@ ul li.disabled > a {
 
 ul > li > progress {
   display: inline-block;
-  margin: 0 0 0 3rem;
+  margin: 0;
   padding: 0;
 }
 
@@ -60,20 +99,51 @@ ul > li > progress + span {
   display: inline-block;
   vertical-align: middle;
   margin: 0;
-  padding: 0 0 0 1rem;
+  padding: 0;
+  -moz-padding-start: 1rem;
   color: #505b5b;
   font-size: 1.4rem;
+  line-height: 6rem;
 }
 
 /* description + value on the same line */
-ul li > a span {
-  position: absolute;
-  right: 3rem;
+ul li .info-item {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: nowrap;
+  align-items: center;
+  justify-content: center;
+}
+
+ul li .info-item .info-item-title {
+  order: 1;
+  flex: 1 0 auto;
+}
+
+ul li .info-item .info-item-space {
+  order: 2;
+  flex: 0 0 2rem;
+}
+
+ul li .info-item .info-item-content {
+  order: 3;
+  flex: 1 1 auto;
   color: #505859;
+  text-align: right;
+}
+
+/* backward compatible */
+ul li > a:not(.info-item) span:nth-of-type(2):not(.button) {
+  position: absolute;
+  right: 1.5rem;
+  color: #505859;
+  line-height: 6rem;
+  height: 6rem;
+  top: 0;
 }
 
 /* text ellipsis */
-ul li > * {
+ul li > *, ul li > label > *, ul li > a > * {
   display: block;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -81,68 +151,201 @@ ul li > * {
 }
 
 /* sublines */
-ul li > small {
-  position: absolute;
-  left: 3rem;
-  right: 3rem;
-  top: 50%;
-  padding-top: 0.4rem;
+ul li > small, ul li > label > small , ul li > a > small {
+  display: block;
   font-size: 1.4rem;
   color: #505859;
   /* click/tap events should be caught by the <a> element below the <small> */
   pointer-events: none;
 }
 
-ul li > label:not([for]) + small {
+small.multiline > span {
+  display: block;
+}
+
+ul li > label {
+  font-size: 1.9rem;
+  line-height: 1.9rem;
+  font-weight: 400;
+  margin: 0;
+}
+
+ul li > label ~ input {
+  margin-bottom: 1.5rem;
+}
+
+ul li > label.pack-checkbox > small,
+ul li > label.pack-radio > small {
+  right: 6.1rem;
+}
+
+ul li > label.pack-switch > small {
   right: 9rem;
 }
 
-/* required for empty elements like Bluetooth */
-ul li > small:not(:empty) + a,
-ul li > small:not(:empty) + span {
-  line-height: 4.4rem;
+/* color previews */
+ul li > label.pack-checkbox > .color-preview:before {
+  height: 2rem;
+  width: 2rem;
+  content: "";
+  margin: 0;
+  margin-top: -1.1rem;
+  -moz-margin-start: -3rem;
+  top: 50%;
+  position: absolute;
+}
+
+ul.disabled li > label.pack-checkbox > .color-preview:before {
+  opacity: 0.4;
+}
+
+ul li > label.pack-checkbox > .warning-counter:before {
+  background-color: orange;
+}
+
+ul li > label.pack-checkbox > .error-counter:before {
+  background-color: red;
+}
+
+ul li > label.pack-checkbox > .security-counter:before {
+  background-color: black;
+}
+
+ul li > label.pack-checkbox > .reflow-counter:before {
+  background-color: purple;
+}
+
+ul li > label.pack-checkbox > .jank-monitor:before {
+  background-color: cornflowerblue;
+}
+
+ul li > label.pack-checkbox > .fps-monitor:before {
+  background-color: fuchsia;
+}
+
+ul li > label.pack-checkbox > .ttl-monitor:before {
+  background-color: darkgreen;
+}
+
+ul li > label.pack-checkbox > .uss-monitor:before {
+  background-color: dimgrey;
+}
+
+ul li > label.pack-checkbox > .memory-monitor:before {
+  background-color: lightslategrey;
+}
+
+ul li > label.pack-checkbox > .memory-item:before {
+  background-color: lightslategrey;
+  height: 2rem;
+  width: 2rem;
+  margin: 0;
+  margin-top: -1.1rem;
+  -moz-margin-start: -3rem;
 }
 
 
 /******************************************************************************
- * Boolean inputs
+ * Boolean buttons
  */
 
-ul li button,
-ul li a[role="button"] {
-  position: relative;
-  top: 1.1rem;
-  left: 3rem;
-  width: calc(100% - 6rem);
+ul li button {
+  display: inline-block;
+  margin: 1rem 0;
 }
+
+/******************************************************************************
+ * Boolean inputs
+ */
 
 /* custom styles for boolean inputs (see /shared/style/switches.css) */
 ul li label {
   text-transform: none;
 }
 
-ul li > label:not([for]) {
-  position: absolute;
-  top: 0;
-  left: 0;
+ul li > label:not([for]),
+ul li > label.pack-checkbox,
+ul li > label.pack-radio,
+ul li > label.pack-switch {
+  -moz-margin-start: -1.5rem;
+  -moz-margin-end: -1.5rem;
+  -moz-padding-start: 1.5rem;
+  -moz-padding-end: 1.5rem;
   width: 100%;
-  height: 100%;
+  height: calc(100% - 1rem);
+  min-height: 5rem;
+  overflow: visible;
+  display: flex;
 }
 
 ul li > label:not([for]) > span,
-ul li > label:not([for]) > input[data-type="switch"] + span {
+ul li > label.pack-checkbox > span,
+ul li > label.pack-radio > span,
+ul li > label.pack-switch > span {
+  line-height: normal;
+  height: auto;
+}
+
+ul li > label.pack-checkbox > span:after,
+ul li > label.pack-radio > span:after,
+ul li > label.pack-switch > input ~ span:after {
   left: auto;
-  right: 3rem;
+  right: 1.5rem;
 }
 
-ul li > label:not([for]) ~ a {
-  padding-right: 9rem;
+ul li > label.pack-checkbox > span {
+  -moz-padding-end: 6.1rem;
 }
 
-ul li > label:not([for]):active ~ a {
+ul li > label.pack-radio ~ p {
+  -moz-padding-end: 3rem;
+}
+
+ul li > label.pack-switch > span {
+  -moz-padding-end: 9rem;
+}
+
+ul li > label.pack-radio > span {
+  -moz-padding-end: 5.9rem;
+}
+
+ul li > label.pack-checkbox:active,
+ul li > label.pack-radio:active,
+ul li > label.pack-switch:active {
   background-color: #b2f2ff;
   color: #222;
 }
+
+/******************************************************************************
+ * Split panel
+ */
+ul li.pack-split .name:active {
+  background-color: #B2F2FF;
+}
+
+ul li.pack-split .name {
+  position: relative;
+  width: calc(100% - 9rem);
+}
+
+ul li.pack-split:after {
+  content: '';
+  position: absolute;
+  background-color: #E6E6E3;
+  right: 7.5rem;
+  width: 0.1rem;
+  height: calc(100% - 2rem);
+  top: 1rem;
+}
+
+ul li.pack-split > span {
+  background-color: transparent;
+}
+
+ul li.pack-split > label.pack-switch {
+  position: absolute;
+}
+
 
 /******************************************************************************
  * Field inputs
@@ -150,22 +353,15 @@ ul li > label:not([for]):active ~ a {
 
 ul li p {
   font-size: 1.9rem;
+  line-height: 1.9rem;
   font-weight: 400;
   margin: 0;
-  padding: 1rem 3rem 1.2rem;
+  padding: 1.5rem 1.5rem 1rem;
 }
 
 ul li p + label:not([for]) {
   top: 2.5rem;
   height: calc(100% - 2.5rem);
-}
-
-ul li p + input[type="text"],
-ul li p + input[type="number"],
-ul li p + input[type="tel"],
-ul li p + input[type="password"] {
-  width: calc(100% - 6rem);
-  margin: -1rem auto 1rem;
 }
 
 
@@ -179,17 +375,14 @@ input[type=range] {
   background: none;
 }
 
-input[type=range]:-moz-focusring {
-  outline: none;
+input[type=range]::-moz-focus-outer {
+  border: 0;
 }
 
 ul li > label input[type="range"] {
-  position: relative;
-  top: calc(50% - 1.5rem);
-  left: 6.5rem;
-  right: 8.5rem;
   height: 3rem;
-  width: calc(100% - 15rem);
+  width: calc(100% - 3rem);
+  margin: 1.5rem;
 }
 
 input[type=range]::-moz-range-track {
@@ -210,6 +403,7 @@ input[type=range]::-moz-range-thumb {
   transition: border 0.15s ease;
   -moz-box-sizing: border-box;
   background: url(images/range_thumb.png) no-repeat 50% 50%;
+  background-size: 2.8rem 2.8rem;
 }
 
 input[type=range]:active::-moz-range-thumb {
@@ -218,160 +412,15 @@ input[type=range]:active::-moz-range-thumb {
 
 ul li.sound-setting > label input[type="range"] {
   margin: 0 auto;
-  width: calc(100% - 6rem);
-  left: 3rem;
+  width: calc(100% - 3rem);
+  left: 1.5rem;
 }
 
-ul li#brightness-manual > label input[type="range"] {
+ul li.brightness-manual > label input[type="range"] {
   margin: 0 auto;
-  width: calc(100% - 13rem);
+  width: calc(100% - 10rem);
+  display: inline;
 }
-
-/**
- * Polyfill until input[type=range] is natively supported by Gecko:
- * https://bugzilla.mozilla.org/show_bug.cgi?id=344618
- *
- * The JS polyfill transforms this:
- *
- *   <label>
- *     <input type="range" value="60" />
- *   </label>
- *
- * into this:
- *
- *   <label class="bug344618_polyfill">
- *     <div>
- *       <span style="width: 60%"></span>
- *       <span style="left: 60%"></span>
- *     </div>
- *     <input type="range" />
- *   </label>
- */
-
-ul li > label.bug344618_polyfill input {
-  display: none;
-}
-
-/* slider */
-
-ul li > label.bug344618_polyfill div:before {
-  content: "";
-  position: absolute;
-  top: calc(50% - 0.1rem);
-  left: 0;
-  right: 0;
-  height: 0.1rem;
-  border-top: 0.1rem solid #7e7e7e;
-}
-
-ul li > label.bug344618_polyfill div {
-  position: relative;
-  top: calc(50% - 1.5rem);
-  left: 3rem;
-  right: 3rem;
-  height: 3rem;
-  width: calc(100% - 6rem);
-}
-
-/* fill */
-
-ul li > label.bug344618_polyfill div span:first-child {
-  position: absolute;
-  display: block;
-  top: calc(50% - 0.15rem);
-  width: 4rem;
-  height: 0.3rem;
-  background-color: #01c5ed;
-}
-
-/* throbber */
-
-ul li > label.bug344618_polyfill div span:last-child {
-  position: absolute;
-  top: 50%;
-  margin: -2rem 0 0 -2rem;
-  display: block;
-  width: 3.8rem;
-  height: 3.8rem;
-  outline: solid 0.1rem transparent;
-  outline-offset: -1rem;
-  -moz-outline-radius: 3rem;
-  transition: outline 0.15s ease;
-  background: url(images/range_thumb.png) no-repeat 50% 50%;
-}
-
-ul li > label.bug344618_polyfill div span:last-child:active {
-  outline: solid 0.4rem #01c5ed;
-}
-
-
-/******************************************************************************
- * Select boxes
- */
-
-ul li select {
-  font-size: 1.9rem;
-  height: 3rem;
-  line-height: 3rem;
-  text-align: center;
-}
-
-/* half-width select boxes */
-ul li span select {
-  display: inline-block;
-  position: absolute;
-  top: 1.5rem;
-  right: 3rem;
-  width: calc(50% - 2rem);
-}
-
-/* full-width select boxes */
-ul li p + select {
-  display: block;
-  width: calc(100% - 15rem);
-  margin: -1rem 3rem 1rem 12rem;
-}
-
-/******************************************************************************
- * Fake select boxes
- */
-.fake-select {
-  position: relative;
-  display: block;
-  padding: 1.1rem 3rem;
-  margin: 0;
-  height: 3.8rem;
-}
-
-.fake-select.small {
-  display: inline-block;
-  vertical-align: top;
-}
-
-.fake-select > button {
-  display: block;
-  top: 0;
-  left: 0;
-  width: 100%;
-}
-
-.fake-select > select {
-  position: absolute;
-  top: 0;
-  left: 3rem;
-  width: calc(100% - 6rem);
-  height: 3.8rem;
-  border: none;
-  background: red;
-  opacity: 0;
-}
-
-/* */
-section[role="region"] > ul > li > p + .fake-select {
-  padding-top: 0;
-  margin-top: -0.8rem;
-}
-
 
 /******************************************************************************
  * Progress, Meter
@@ -379,7 +428,7 @@ section[role="region"] > ul > li > p + .fake-select {
 
 ul > li progress[value] {
   display: block;
-  width: calc(100% - 6rem);
+  width: calc(100% - 3rem);
   height: 3rem;
   margin: 3rem auto;
   background: #e7e7e7;
@@ -404,7 +453,7 @@ dl > * {
 }
 
 dl dt {
-  padding-left: 3rem;
+  -moz-padding-start: 3rem;
   font-weight: 500;
   border-bottom: 0.1rem solid black;
 }
@@ -415,56 +464,39 @@ dl dd {
   border-bottom: 0.1rem solid #e6e6e3; /* same as "ul li" */
 }
 
-
 /******************************************************************************
- * Right-to-Left layout
+ * Right-To-Left layout
  */
 
-/* definition lists */
-html[dir="rtl"] dl dt {
-  padding-left: inherit;
-  padding-right: 3rem;
+html[dir="rtl"] ul li > a span:nth-of-type(2):not(.button) {
+  left: 0;
+  right: unset;
 }
 
-/* half-width select boxes */
-html[dir="rtl"] ul li span select {
-  left: 3rem;
-  right: inherit;
+html[dir="rtl"] ul li > label.pack-checkbox > small,
+html[dir="rtl"] ul li > label.pack-radio > small {
+  left: 6.1rem;
+  right: unset;
 }
 
-/* full-width select boxes */
-html[dir="rtl"] ul li p + select {
-  margin: -1rem 12rem 1rem 3rem;
+html[dir="rtl"] ul li > label.pack-switch > small {
+  left: 9rem;
+  right: unset;
 }
 
-/* boolean inputs */
-
-html[dir="rtl"] ul li button,
-html[dir="rtl"] ul li a[role="button"] {
-  left: inherit;
-  right: 3rem;
+html[dir="rtl"] ul li > label.pack-checkbox > span:after,
+html[dir="rtl"] ul li > label.pack-radio > span:after,
+html[dir="rtl"] ul li > label.pack-switch > input ~ span:after {
+  left: 1.5rem;
+  right: auto;
 }
 
-html[dir="rtl"] ul li > label:not([for]) > span,
-html[dir="rtl"] ul li > label:not([for]) > input[data-type="switch"] + span {
-  left: 9rem; /* XXX we use "right: 3rem" for LTR layouts... */
-  right: inherit;
+html[dir="rtl"] ul li.pack-split:after {
+  left: 7.5rem;
+  right: unset;
 }
 
-html[dir="rtl"] ul li > label:not([for]) ~ a {
-  padding-left: 9rem;
-  padding-right: 3rem;
-}
-
-/* description + value on the same line */
-html[dir="rtl"] ul li > a span {
-  left: 3rem;
-  right: inherit;
-}
-
-/* main list items */
-html[dir="rtl"] ul li > a,
-html[dir="rtl"] ul li > span {
-  padding-left: inherit;
-  padding-right: 3rem;
+html[dir="rtl"] ul li.sound-setting > label input[type="range"] {
+  left: unset;
+  right: 1.5rem;
 }

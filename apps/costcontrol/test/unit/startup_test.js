@@ -1,105 +1,144 @@
+/* global MockCommon, MockCostControl, MockNavigatorMozMobileConnections, Event,
+          CostControlApp, Common, MockConfigManager, asyncStorage,
+          MockMozNetworkStats, MocksHelper, SimManager, MockNavigatorSettings,
+          AirplaneModeHelper
+*/
+/* exported PerformanceTestingHelper */
 'use strict';
 
-// XXX: As there are two iframes in the body, Firefox adds two indexed items
-// in the window object referring to those frames. Mocha considers these
-// indices as global leaks so we need to `whitelist` them.
-mocha.setup({ globals: ['0', '1'] });
-
-requireApp('costcontrol/test/unit/mock_debug.js');
-requireApp('costcontrol/test/unit/mock_common.js');
-requireApp('costcontrol/test/unit/mock_moz_l10n.js');
-requireApp('costcontrol/test/unit/mock_moz_mobile_connection.js');
-requireApp('costcontrol/shared/test/unit/mocks/' +
-           'mock_navigator_moz_set_message_handler.js');
-requireApp('costcontrol/test/unit/mock_cost_control.js');
-requireApp('costcontrol/test/unit/mock_config_manager.js');
-requireApp('costcontrol/js/utils/toolkit.js');
-requireApp('costcontrol/js/view_manager.js');
-requireApp('costcontrol/js/app.js');
+require('/shared/js/usertiming.js');
+require('/shared/test/unit/mocks/mock_lazy_loader.js');
+require('/shared/test/unit/mocks/mock_async_storage.js');
+require('/test/unit/mock_debug.js');
+require('/test/unit/mock_common.js');
+require('/test/unit/mock_moz_l10n.js');
+require('/shared/test/unit/mocks/mock_navigator_moz_mobile_connections.js');
+require('/test/unit/mock_moz_network_stats.js');
+require('/test/unit/mock_settings_listener.js');
+require('/shared/test/unit/mocks/mock_navigator_moz_set_message_handler.js');
+require('/shared/test/unit/mocks/mock_settings_listener.js');
+require('/shared/test/unit/mocks/mock_navigator_moz_settings.js');
+require('/shared/test/unit/mocks/mock_navigator_moz_icc_manager.js');
+require('/test/unit/mock_cost_control.js');
+require('/test/unit/mock_config_manager.js');
+require('/test/unit/mock_non_ready_screen.js');
+require('/js/utils/toolkit.js');
+require('/js/view_manager.js');
+require('/js/app.js');
+require('/js/common.js');
+require('/js/sim_manager.js');
 require('/shared/test/unit/load_body_html_helper.js');
+require('/shared/test/unit/mocks/mock_accessibility_helper.js');
+require('/test/unit/mock_airplane_mode_helper.js');
 
 var realCommon,
-    realMozMobileConnection,
+    realMozSettings,
+    realMozMobileConnections,
     realMozL10n,
-    realCostControl,
-    realConfigManager,
-    realMozSetMessageHandler;
+    realMozSetMessageHandler,
+    realMozNetworkStats,
+    realMozIccManager;
 
-if (!this.Common) {
-  this.Common = null;
+var PerformanceTestingHelper = {
+  dispatch: function() { }
+};
+
+if (!window.navigator.mozNetworkStats) {
+  window.navigator.mozNetworkStats = null;
 }
 
-if (!this.navigator.mozMobileConnection) {
-  this.navigator.mozMobileConnection = null;
+if (!window.navigator.mozIccManager) {
+  window.navigator.mozIccManager = null;
 }
 
-if (!this.navigator.mozL10n) {
-  this.navigator.mozL10n = null;
+if (!window.Common) {
+  window.Common = null;
 }
 
-if (!this.CostControl) {
-  this.CostControl = null;
+if (!window.navigator.mozSetMessageHandler) {
+  window.navigator.mozSetMessageHandler = null;
 }
 
-if (!this.ConfigManager) {
-  this.ConfigManager = null;
+if (!window.navigator.mozMobileConnections) {
+  window.navigator.mozMobileConnections = null;
 }
 
-if (!this.navigator.mozSetMessageHandler) {
-  this.navigator.mozSetMessageHandler = null;
+if (!window.navigator.mozL10n) {
+  window.navigator.mozL10n = null;
 }
+
+if (!window.navigator.mozSettings) {
+  window.navigator.mozSettings = null;
+}
+
+var MocksHelperForUnitTest = new MocksHelper([
+  'LazyLoader',
+  'asyncStorage',
+  'AirplaneModeHelper',
+  'ConfigManager',
+  'CostControl',
+  'SettingsListener',
+  'NonReadyScreen',
+  'AccessibilityHelper'
+]).init();
 
 suite('Application Startup Modes Test Suite >', function() {
 
+  MocksHelperForUnitTest.attachTestHelpers();
   suiteSetup(function() {
     realCommon = window.Common;
 
-    realMozMobileConnection = window.navigator.mozMobileConnection;
+    realMozMobileConnections = window.navigator.mozMobileConnections;
+    window.navigator.mozMobileConnections = MockNavigatorMozMobileConnections;
 
     realMozL10n = window.navigator.mozL10n;
     window.navigator.mozL10n = window.MockMozL10n;
-
-    realCostControl = window.CostControl;
-
-    realConfigManager = window.ConfigManager;
 
     realMozSetMessageHandler = window.navigator.mozSetMessageHandler;
     window.navigator.mozSetMessageHandler =
       window.MockNavigatormozSetMessageHandler;
     window.navigator.mozSetMessageHandler.mSetup();
+
+    realMozNetworkStats = window.navigator.mozNetworkStats;
+    navigator.mozNetworkStats = MockMozNetworkStats;
+
+    realMozSettings = navigator.mozSettings;
+    window.navigator.mozSettings = MockNavigatorSettings;
+
+    realMozIccManager = window.navigator.mozIccManager;
+    navigator.mozIccManager = window.MockNavigatorMozIccManager;
   });
 
   setup(function() {
-    CostControlApp.reset();
+    SimManager.reset();
+    navigator.mozIccManager = window.MockNavigatorMozIccManager;
     window.dispatchEvent(new Event('localized'));
+  });
+
+  teardown(function() {
+    CostControlApp.reset();
+    window.location.hash = '';
   });
 
   suiteTeardown(function() {
     window.Common = realCommon;
-    window.navigator.mozMobileConnection = realMozMobileConnection;
+    window.navigator.mozMobileConnections = realMozMobileConnections;
     window.navigator.mozL10n = realMozL10n;
-    window.CostControl = realCostControl;
-    window.ConfigManager = realConfigManager;
     window.navigator.mozSetMessageHandler.mTeardown();
     window.navigator.mozSetMessageHandler = realMozSetMessageHandler;
+    window.navigator.mozNetworkStats = realMozNetworkStats;
+    window.navigator.mozIccManager = realMozIccManager;
+    window.navigator.mozSettings = realMozSettings;
   });
 
-  function assertAlertMessageAndClose(msg, done) {
-    var expectedEvents = 2;
-    function checkDone() {
-      expectedEvents--;
-      if (expectedEvents === 0) {
-        done();
-      }
-    }
-    window.addEventListener('fakealert', function _onalert(evt) {
-      window.removeEventListener('fakealert', _onalert);
-      assert.equal(evt.detail, msg);
-      checkDone();
-    });
-    window.addEventListener('appclosed', function _onappclosed() {
-      window.removeEventListener('appclosed', _onappclosed);
-      checkDone();
+  function assertNonReadyScreen(msg, done) {
+    var consoleSpy = sinon.spy(console, 'log');
+    window.addEventListener('viewchanged', function _onalert(evt) {
+      window.removeEventListener('viewchanged', _onalert);
+      assert.equal(evt.detail.id, 'non-ready-screen');
+      assert.ok(consoleSpy.calledWith(msg));
+      consoleSpy.restore();
+      done();
     });
   }
 
@@ -116,7 +155,7 @@ suite('Application Startup Modes Test Suite >', function() {
     var dataUsageTab = document.getElementById('datausage-tab');
 
     // Tab zone is hidden and standalone mode for data usage tab is set
-    assert.equal(tabs.getAttribute('aria-hidden'), 'true');
+    assert.ok(tabs.hidden);
     assert.isTrue(dataUsageTab.classList.contains('standalone'));
   }
 
@@ -129,9 +168,9 @@ suite('Application Startup Modes Test Suite >', function() {
 
     // Tab zone is shown, the balance enabler (filter) is shown and the
     // telephony one is hidden.
-    assert.notEqual(tabs.getAttribute('aria-hidden'), 'true');
-    assert.notEqual(balanceTabFilter.getAttribute('aria-hidden'), 'true');
-    assert.equal(telephonyTabFilter.getAttribute('aria-hidden'), 'true');
+    assert.ok(!tabs.hidden);
+    assert.ok(!balanceTabFilter.hidden);
+    assert.ok(telephonyTabFilter.hidden);
 
     // Balance is currently shown
     assert.equal(balanceTab.dataset.viewport, '');
@@ -150,9 +189,9 @@ suite('Application Startup Modes Test Suite >', function() {
 
     // Tab zone is shown, the telephony enabler (filter) is shown and the
     // balance one is hidden.
-    assert.notEqual(tabs.getAttribute('aria-hidden'), 'true');
-    assert.equal(balanceTabFilter.getAttribute('aria-hidden'), 'true');
-    assert.notEqual(telephonyTabFilter.getAttribute('aria-hidden'), 'true');
+    assert.ok(!tabs.hidden);
+    assert.ok(balanceTabFilter.hidden);
+    assert.ok(!telephonyTabFilter.hidden, 'true');
 
     // Telephony is currently shown
     assert.equal(telephonyTab.dataset.viewport, '');
@@ -162,106 +201,125 @@ suite('Application Startup Modes Test Suite >', function() {
     assert.isFalse(dataUsageTab.classList.contains('standalone'));
   }
 
-  function setupCardState(cardState) {
-    window.Common = new MockCommon({ isValidICCID: true });
+  function failingRequestDataSIMIccId(onsuccess, onerror) {
+    setTimeout(function() {
+      (typeof onerror === 'function') && onerror();
+    }, 0);
+  }
+
+  function setupCardState(icc) {
+    window.Common = new MockCommon();
     window.CostControl = new MockCostControl();
-    window.navigator.mozMobileConnection = new MockMozMobileConnection({
-      cardState: cardState
-    });
+    window.MockNavigatorMozIccManager.mTeardown();
+    window.MockNavigatorMozIccManager.addIcc('12345', icc);
+    MockNavigatorMozMobileConnections[0] = {  iccId: '12345' };
   }
 
   test('SIM is not ready', function(done) {
-    setupCardState('absent');
+    loadBodyHTML('/index.html');
+    setupCardState({cardState: null});
 
-    assertAlertMessageAndClose(
-      'widget-no-sim2-heading\nwidget-no-sim2-meta',
-      done
-    );
+    assertNonReadyScreen('NonReadyScreen in state: null', done);
+
+    CostControlApp.init();
+  });
+
+  test('Not exist a mandatory API', function(done) {
+    loadBodyHTML('/index.html');
+    assertNonReadyScreen('NonReadyScreen in state: null', done);
+    window.navigator.mozIccManager = null;
 
     CostControlApp.init();
   });
 
   test('SIM is locked by PIN', function(done) {
-    setupCardState('pinRequired');
+    loadBodyHTML('/index.html');
+    setupCardState({cardState: 'pinRequired'});
 
-    assertAlertMessageAndClose(
-      'widget-sim-locked-heading\nwidget-sim-locked-meta',
-      done
-    );
+    assertNonReadyScreen('NonReadyScreen in state: pinRequired', done);
 
     CostControlApp.init();
   });
 
   test('SIM is locked by PUK', function(done) {
-    setupCardState('pukRequired');
+    loadBodyHTML('/index.html');
+    setupCardState({cardState: 'pukRequired'});
 
-    assertAlertMessageAndClose(
-      'widget-sim-locked-heading\nwidget-sim-locked-meta',
-      done
-    );
+    assertNonReadyScreen('NonReadyScreen in state: pukRequired', done);
 
     CostControlApp.init();
   });
 
-  test(
-    'First Time Experience Loaded when new SIM > DATA_USAGE_ONLY',
+  test('SIM is detected after a non detected SIM on a previous start-up',
     function(done) {
-      var applicationMode = 'DATA_USAGE_ONLY';
-      setupCardState('ready');
-      window.ConfigManager = new MockConfigManager({
-        fakeSettings: { fte: true },
-        applicationMode: applicationMode
+      loadBodyHTML('/index.html');
+      this.sinon.spy(window.navigator.mozIccManager, 'addEventListener');
+
+      // The icc request fails, because of this request doesn't work if the
+      // airplane mode is enabled.
+      sinon.stub(SimManager, 'requestDataSimIcc', failingRequestDataSIMIccId);
+
+      // airplanemode activated for enable the iccmanager listeners
+      AirplaneModeHelper._status = 'enabled';
+
+      window.addEventListener('viewchanged', function _onalert(evt) {
+        window.removeEventListener('viewchanged', _onalert);
+
+        // Restore the stub method and disabling the airplanemode
+        SimManager.requestDataSimIcc.restore();
+        AirplaneModeHelper._status = 'disabled';
+
+        // Config the app to start (FTE)
+        var applicationMode = 'DATA_USAGE_ONLY';
+        setupCardState({cardState: 'ready'});
+        window.ConfigManager = new MockConfigManager({
+          fakeSettings: { fte: true },
+          applicationMode: applicationMode
+        });
+
+        // The assertion function contains a listener to detect when the fte is
+        // ready, for this reason it must be placed before dispatching the
+        // airplanemode disabled event
+        assertFTEStarted(applicationMode, done);
+
+        // Launch the second start-up
+        var eventDetail = { detail: {serviceId: 'data'}};
+        var airplaneModeDisabledEvent =
+          new CustomEvent('airplaneModeDisabled', eventDetail);
+        window.dispatchEvent(airplaneModeDisabledEvent);
       });
 
-      assertFTEStarted(applicationMode, done);
-
       CostControlApp.init();
-    }
-  );
+  });
 
-  test(
-    'First Time Experience Loaded when new SIM > PREPAID',
+  test('SIM is not detected, the icc request is failing',
     function(done) {
-      var applicationMode = 'PREPAID';
-      setupCardState('ready');
-      window.ConfigManager = new MockConfigManager({
-        fakeSettings: { fte: true },
-        applicationMode: applicationMode
-      });
+      loadBodyHTML('/index.html');
 
-      assertFTEStarted(applicationMode, done);
+      this.sinon.stub(SimManager, 'requestDataSimIcc',
+                      failingRequestDataSIMIccId);
 
+        // Config the app to start (FTE)
+        var applicationMode = 'DATA_USAGE_ONLY';
+        window.CostControl = new MockCostControl();
+        window.ConfigManager = new MockConfigManager({
+          applicationMode: applicationMode
+        });
+
+      AirplaneModeHelper._status = 'disabled';
       CostControlApp.init();
-    }
-  );
-
-  test(
-    'First Time Experience Loaded when new SIM > POSTPAID',
-    function(done) {
-      var applicationMode = 'POSTPAID';
-      setupCardState('ready');
-      window.ConfigManager = new MockConfigManager({
-        fakeSettings: { fte: true },
-        applicationMode: applicationMode
-      });
-
-      assertFTEStarted(applicationMode, done);
-
-      CostControlApp.init();
-    }
-  );
+      assertNonReadyScreen('NonReadyScreen in state: null', done);
+  });
 
   function setupLayoutMode(applicationMode) {
     loadBodyHTML('/index.html');
-    window.Common = new MockCommon({ isValidICCID: true });
+    window.Common = new MockCommon();
     window.CostControl = new MockCostControl();
-    window.navigator.mozMobileConnection = new MockMozMobileConnection({
-      cardState: 'ready'
-    });
     window.ConfigManager = new MockConfigManager({
       fakeSettings: { fte: false },
       applicationMode: applicationMode
     });
+    Common.dataSimIcc = {cardState: 'ready'};
   }
 
   test('Layout: Data Usage Only', function(done) {
@@ -300,4 +358,166 @@ suite('Application Startup Modes Test Suite >', function() {
     CostControlApp.init();
   });
 
+  suite('supportCustomizeMode setting', function() {
+    var MockMozAlarms = {
+      add: function() {},
+      remove: function() {}
+    };
+    var realMozAlarms;
+
+    suiteSetup(function() {
+      realMozAlarms = window.navigator.mozAlarms;
+      window.navigator.mozAlarms = MockMozAlarms;
+    });
+
+    suiteTeardown(function() {
+      window.navigator.mozAlarms = realMozAlarms;
+    });
+
+    test('Start up with custom mode when functionality is disabled produces ' +
+         'a change to the never mode',
+      function(done) {
+        var expectedMode = 'never';
+        var applicationMode = 'DATA_USAGE_ONLY';
+        setupCardState({cardState: 'ready'});
+        window.ConfigManager = new MockConfigManager(
+          {
+            fakeSettings: {
+              fte: true,
+              trackingPeriod: 'custom'
+            },
+            applicationMode: applicationMode
+          }
+        );
+
+        window.addEventListener('ftestarted', function _onftestarted(evt) {
+          window.removeEventListener('ftestarted', _onftestarted);
+          assert.equal(window.ConfigManager.option('trackingPeriod'),
+                       expectedMode);
+          done();
+        });
+
+        CostControlApp.init();
+      }
+    );
+
+    test('Start up with custom mode when functionality is disabled remove ' +
+         'nextReset alarm',
+      function(done) {
+        var expectedMode = 'never';
+        var nextResetAlarmId = '111';
+        var applicationMode = 'DATA_USAGE_ONLY';
+        this.sinon.stub(asyncStorage, 'getItem').yields(nextResetAlarmId);
+        this.sinon.stub(asyncStorage, 'setItem').yields();
+        this.sinon.stub(navigator.mozAlarms, 'remove', function() {});
+        setupCardState({cardState: 'ready'});
+        window.ConfigManager = new MockConfigManager(
+          {
+            fakeSettings: {
+              fte: true,
+              trackingPeriod: 'custom',
+              nextReset: new Date()
+            },
+            applicationMode: applicationMode
+          }
+        );
+
+        window.addEventListener('ftestarted', function _onftestarted(evt) {
+          window.removeEventListener('ftestarted', _onftestarted);
+          assert.equal(window.ConfigManager.option('trackingPeriod'),
+                       expectedMode);
+          sinon.assert.calledWith(navigator.mozAlarms.remove, nextResetAlarmId);
+          assert.isNull(window.ConfigManager.option('nextReset'));
+          done();
+        });
+
+        CostControlApp.init();
+      }
+    );
+  });
+
+  suite('FTE Startup Test Suite >', function() {
+    test(
+      'First Time Experience Loaded when new SIM > DATA_USAGE_ONLY',
+      function(done) {
+        var applicationMode = 'DATA_USAGE_ONLY';
+        setupCardState({cardState: 'ready'});
+        window.ConfigManager = new MockConfigManager({
+          fakeSettings: { fte: true },
+          applicationMode: applicationMode
+        });
+
+        assertFTEStarted(applicationMode, done);
+
+        CostControlApp.init();
+      }
+    );
+
+    test(
+      'First Time Experience Loaded when new SIM > PREPAID',
+      function(done) {
+        var applicationMode = 'PREPAID';
+        setupCardState({cardState: 'ready'});
+        window.ConfigManager = new MockConfigManager({
+          fakeSettings: { fte: true },
+          applicationMode: applicationMode
+        });
+
+        assertFTEStarted(applicationMode, done);
+
+        CostControlApp.init();
+      }
+    );
+
+    test(
+      'First Time Experience Loaded when new SIM > POSTPAID',
+      function(done) {
+        var applicationMode = 'POSTPAID';
+        setupCardState({cardState: 'ready'});
+        window.ConfigManager = new MockConfigManager({
+          fakeSettings: { fte: true },
+          applicationMode: applicationMode
+        });
+
+        assertFTEStarted(applicationMode, done);
+
+        CostControlApp.init();
+      }
+    );
+
+    var updateUITestCase = [
+      {
+        description : 'UpdateUI executes the callback after a mode change',
+        applicationMode : 'DATA_USAGE_ONLY'
+      },
+      {
+        description :
+          'UpdateUI executes the callback even if there is not a mode change',
+        applicationMode : null
+      }
+    ];
+
+    updateUITestCase.forEach(function(testCase) {
+      test(testCase.description, function(done) {
+        var applicationMode = testCase.applicationMode;
+        setupCardState({cardState: 'ready'});
+        window.ConfigManager = new MockConfigManager({
+          fakeSettings: { fte: true },
+          applicationMode: applicationMode
+        });
+        function _finalizeFTE (evt) {
+          window.removeEventListener('ftestarted', _finalizeFTE);
+          window.ConfigManager.setOption({ fte: false }, function() {
+            window.postMessage({ type: 'fte_finished' },
+                               Common.COST_CONTROL_APP);
+          });
+        }
+        window.addEventListener('ftestarted', _finalizeFTE);
+
+        this.sinon.stub(Common, 'closeFTE', done);
+
+        CostControlApp.init();
+      });
+    });
+  });
 });

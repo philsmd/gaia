@@ -1,3 +1,5 @@
+/*exported AttachmentMenu */
+
 'use strict';
 
 /**
@@ -6,7 +8,7 @@
 var AttachmentMenu = {
 
   init: function(id) {
-    this.el = document.getElementById(id);
+    this.el = document.getElementById(id).querySelector('#attachment-options');
     ['view', 'remove', 'replace', 'cancel'].forEach(function(button) {
       this[button + 'Button'] =
         this.el.querySelector('#attachment-options-' + button);
@@ -17,28 +19,34 @@ var AttachmentMenu = {
   open: function(attachment) {
     var name = attachment.name;
     var blob = attachment.blob;
-    var _ = navigator.mozL10n.get;
     var fileName = name.substr(name.lastIndexOf('/') + 1);
 
     // Localize the name of the file type
     var types = ['image', 'audio', 'video'];
     var mimeFirstPart = blob.type.substr(0, blob.type.indexOf('/'));
-    var fileType;
-    if (mimeFirstPart.indexOf(mimeFirstPart) > -1) {
-      fileType = _('attachment-type-' + mimeFirstPart);
-    }
-    else {
+
+    // default to -other
+    var fileType = 'other';
+    if (types.indexOf(mimeFirstPart) > -1) {
       fileType = mimeFirstPart;
     }
 
     this.header.textContent = fileName;
-    this.viewButton.textContent = _('view-attachment');
-    this.removeButton.textContent = _('remove-attachment', {type: fileType});
-    this.replaceButton.textContent = _('replace-attachment',
-      {type: fileType});
-    this.cancelButton.textContent = _('cancel');
 
-    this.el.className = '';
+    this.viewButton.setAttribute(
+      'data-l10n-id',
+      'view-attachment-' + fileType
+    );
+    this.removeButton.setAttribute(
+      'data-l10n-id',
+      'remove-attachment-' + fileType
+    );
+    this.replaceButton.setAttribute(
+      'data-l10n-id',
+      'replace-attachment-' + fileType
+    );
+
+    this.el.classList.add('visible');
 
     // focus the menu so we can lose focus on anything with the keyboard
     // when we gain focus through longpress/contextmenu the keyboard
@@ -47,7 +55,7 @@ var AttachmentMenu = {
   },
 
   close: function() {
-    this.el.className = 'hide';
+    this.el.classList.remove('visible');
   }
 
 };

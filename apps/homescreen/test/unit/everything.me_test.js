@@ -1,77 +1,99 @@
 'use strict';
 
+require('/shared/test/unit/mocks/mock_navigator_moz_settings.js');
+require('/shared/test/unit/mocks/mock_l10n.js');
 requireApp('homescreen/test/unit/mock_everything.me.html.js');
+requireElements('homescreen/elements/search_page.html');
+requireApp('homescreen/test/unit/mock_asyncStorage.js');
+requireApp('homescreen/test/unit/mock_lazy_loader.js');
+requireApp('homescreen/shared/test/unit/mocks/mock_settings_listener.js');
 requireApp('homescreen/everything.me/js/everything.me.js');
 
-suite('everything.me.js >', function() {
+if (!this.asyncStorage) {
+  this.asyncStorage = null;
+}
 
-  var wrapperNode, page, footer, loadingOverlay;
+var mocksHelperForEVME = new MocksHelper([
+  'LazyLoader',
+  'SettingsListener'
+]);
+mocksHelperForEVME.init();
+
+suite('everything.me.js >', function() {
+  var wrapperNode,
+      realAsyncStorage,
+      realMozSettings,
+      realL10n;
+
+  suiteTemplate('search-page', {
+    id: 'search-page'
+  });
 
   suiteSetup(function() {
+    mocksHelperForEVME.suiteSetup();
+    realAsyncStorage = window.asyncStorage;
+    window.asyncStorage = MockasyncStorage;
+    realMozSettings = navigator.mozSettings;
+    navigator.mozSettings = MockNavigatorSettings;
+    realL10n = navigator.mozL10n;
+    navigator.mozL10n = MockL10n;
+
     wrapperNode = document.createElement('section');
     wrapperNode.innerHTML = MockEverythingMeHtml;
     document.body.appendChild(wrapperNode);
-    page = document.getElementById('evmePage');
-    footer = document.querySelector('#footer');
-    loadingOverlay = document.querySelector('#loading-overlay > section');
-    EverythingME.init();
+
+    var config = {
+      'debug': false
+    };
+
+    EverythingME.init(config);
   });
 
   suiteTeardown(function() {
+    mocksHelperForEVME.suiteTeardown();
+    window.asyncStorage = realAsyncStorage;
+    navigator.mozSettings = realMozSettings;
+    navigator.mozL10n = realL10n;
+
     document.body.removeChild(wrapperNode);
-    page = footer = null;
   });
 
-  suite('Everything.me is initialized correctly >', function() {
-
-    test('Loading overlay is hidden >', function() {
-      assert.notEqual(loadingOverlay.style.visibility, 'visible');
+  suite('Everything.me starts initialization correctly >', function() {
+    test('Ev.me page is loading >', function() {
+      assert.isFalse(document.body.classList.contains('evme-loading'));
+      EverythingME.activate();
+      assert.isTrue(document.body.classList.contains('evme-loading'));
     });
-
-    test('Ev.me page is not loaded >', function() {
-      assert.isFalse(EverythingME.displayed);
-    });
-
-    test('PageHideBySwipe is initialized to false >', function() {
-      assert.isFalse(EverythingME.pageHideBySwipe);
-    });
-
   });
 
-  suite('Everything.me is displayed >', function() {
+  test('Everything.me migration successful >', function(done) {
+    // save localStorge values to restore after the test is complete
+    var originalHistory = localStorage['userHistory'],
+        originalShortcuts = localStorage['localShortcuts'],
+        originalIcons = localStorage['localShortcutsIcons'];
 
-    suiteSetup(function() {
-      page.dispatchEvent(new CustomEvent('gridpageshowend'));
-    });
+    localStorage['userHistory'] = 'no json, should give error but continue';
+    localStorage['localShortcuts'] = '{"_v": "shortcuts json with value"}';
+    localStorage['localShortcutsIcons'] = '{"_v": "icons json with value"}';
 
-    test('Loading overlay is being displayed >', function() {
-      assert.equal(loadingOverlay.style.visibility, 'visible');
-    });
+    EverythingME.migrateStorage(function migrationDone() {
+      // first test that the localStorage items were removed
+      assert.isTrue(!localStorage['userHistory'] &&
+                    !localStorage['localShortcuts'] &&
+                    !localStorage['localShortcutsIcons']);
 
-    test('Ev.me page is loaded >', function() {
-      assert.isTrue(EverythingME.displayed);
-    });
+      // restore original localStorage values
+      localStorage['userHistory'] = originalHistory;
+      localStorage['localShortcuts'] = originalShortcuts;
+      localStorage['localShortcutsIcons'] = originalIcons;
 
-    test('Footer is translated to bottom >', function() {
-      assert.equal(footer.style.MozTransform, 'translateY(100%)');
-    });
+      window.asyncStorage.getItem('evme-localShortcuts', function got(val) {
+        // then that they were actually copied to the IndexedDB
+        assert.isTrue(!!(val && val.value));
 
-  });
-
-  suite('Everything.me is hidden >', function() {
-
-    suiteSetup(function() {
-      page.dispatchEvent(new CustomEvent('gridpagehideend'));
-    });
-
-    test('Ev.me page is not loaded >', function() {
-      assert.isFalse(EverythingME.displayed);
-    });
-
-    test('Footer is visible again >', function() {
-      assert.equal(footer.style.MozTransform, 'translateY(0px)');
-    });
-
+        done();
+      });
+    }, true); // force migration even if already done by EverythingME.init()
   });
 
   suite('Everything.me will be destroyed >', function() {
@@ -80,6 +102,11 @@ suite('everything.me.js >', function() {
       EverythingME.destroy();
       assert.equal(document.querySelectorAll('head > [href*="everything.me"]').
                    length, 0);
+
+      var elementsId = ['evmeOverlay', 'evmeContainer'];
+      elementsId.forEach(function(id) {
+        assert.isNull(document.getElementById(id));
+      });
     });
 
   });

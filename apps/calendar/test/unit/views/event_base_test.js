@@ -1,5 +1,12 @@
-suiteGroup('Views.EventBase', function() {
+define(function(require) {
+'use strict';
 
+var EventBase = require('views/event_base');
+var EventModel = require('models/event');
+var View = require('view');
+var providerFactory = require('provider/provider_factory');
+
+suite('Views.EventBase', function() {
   var subject;
   var app;
   var triggerEvent;
@@ -15,7 +22,7 @@ suiteGroup('Views.EventBase', function() {
   teardown(function() {
     var el = document.getElementById('test');
     el.parentNode.removeChild(el);
-    delete app._providers.Test;
+    delete providerFactory.providers.Test;
   });
 
   setup(function(done) {
@@ -23,19 +30,20 @@ suiteGroup('Views.EventBase', function() {
     div.id = 'test';
     div.innerHTML = [
       '<div id="event-test">',
-        '<button class="primary">primary</button>',
-        '<button class="cancel">cancel</button>',
+        '<gaia-header id="event-test-header" action="cancel">',
+          '<button class="primary">primary</button>',
+        '</gaia-header>',
       '</div>'
     ].join('');
 
     document.body.appendChild(div);
     app = testSupport.calendar.app();
 
-    subject = new Calendar.Views.EventBase({
+    subject = new EventBase({
       app: app,
       selectors: {
         element: '#event-test',
-        cancelButton: '#event-test .cancel',
+        header: '#event-test-header',
         primaryButton: '#event-test .primary'
       }
     });
@@ -61,8 +69,8 @@ suiteGroup('Views.EventBase', function() {
   });
 
   test('initialization', function() {
-    assert.instanceOf(subject, Calendar.View);
-    assert.instanceOf(subject, Calendar.Views.EventBase);
+    assert.instanceOf(subject, View);
+    assert.instanceOf(subject, EventBase);
 
     assert.ok(subject._els, 'has elements');
   });
@@ -71,8 +79,8 @@ suiteGroup('Views.EventBase', function() {
     assert.ok(subject.primaryButton);
   });
 
-  test('.cancelButton', function() {
-    assert.ok(subject.cancelButton);
+  test('.header', function() {
+    assert.ok(subject.header);
   });
 
   test('.fieldRoot', function() {
@@ -104,7 +112,7 @@ suiteGroup('Views.EventBase', function() {
     });
 
     test('readonly', function(done) {
-      var provider = app.provider('Mock');
+      var provider = providerFactory.get('Mock');
 
       provider.stageEventCapabilities(this.event._id, null, {
         canUpdate: false
@@ -119,8 +127,15 @@ suiteGroup('Views.EventBase', function() {
     });
 
     test('normal', function(done) {
+      var isDone = false;
       subject.useModel(this.busytime, this.event, function() {
         done(function() {
+          assert.ok(isDone, 'not async');
+          assert.ok(
+            !subject.element.classList.contains(subject.LOADING),
+            'is not loading'
+          );
+
           assert.equal(
             subject.originalCalendar._id,
             this.event.calendarId
@@ -130,6 +145,12 @@ suiteGroup('Views.EventBase', function() {
           assert.isFalse(hasClass(subject.READONLY), 'is readonly');
         }.bind(this));
       }.bind(this));
+
+      assert.ok(
+        subject.element.classList.contains(subject.LOADING),
+        'is loading'
+      );
+      isDone = true;
     });
   });
 
@@ -165,7 +186,7 @@ suiteGroup('Views.EventBase', function() {
         // model
         assert.instanceOf(
           subject.event,
-          Calendar.Models.Event
+          EventModel
         );
 
         // expected model time
@@ -188,15 +209,41 @@ suiteGroup('Views.EventBase', function() {
       assert.equal(subject.returnTo(), subject.DEFAULT_VIEW);
     });
 
-    suite('update', function() {
-      var busytime;
-      var event;
+    test('/advanced-settings returnTo', function() {
+      subject.app.router.last = {
+        path: '/advanced-settings/'
+      };
 
+      subject.dispatch({ params: {} });
+      assert.strictEqual(subject.returnTo(), subject.DEFAULT_VIEW);
+    });
+
+    test('/day returnTo', function() {
+      subject.app.router.last = {
+        path: '/day/'
+      };
+
+      subject.dispatch({ params: {} });
+      assert.strictEqual(subject.returnTo(), '/day/');
+    });
+
+   suite('update', function() {
       setup(function(done) {
         subject.ondispatch = done;
         subject.dispatch({
           params: { id: this.busytime._id }
         });
+
+        assert.ok(
+          subject.element.classList.contains(subject.LOADING),
+          'is loading'
+        );
+      });
+
+      test('is done loading', function() {
+        assert.ok(
+          !subject.element.classList.contains(subject.LOADING)
+        );
       });
 
       test('existing model', function() {
@@ -236,7 +283,7 @@ suiteGroup('Views.EventBase', function() {
     };
     subject.dispatch({params: {}});
 
-    var fetchReturnTop = subject.returnTop();
+    subject.returnTop();
     subject._returnTo = '/bar';
     subject._updateUI = function() {
       assert.equal(subject._returnTo, '/bar');
@@ -247,48 +294,52 @@ suiteGroup('Views.EventBase', function() {
   });
 
   suite('#_createModel', function() {
-    var controller;
-    var date = new Date(2012, 0, 1);
 
     test('time is less then now', function() {
-      var now = new Date();
-      var start = new Date(
-        now.getFullYear(),
-        now.getMonth(),
-        now.getDate(),
-        now.getHours() + 1
-      );
-
-      var end = new Date(start.valueOf());
-      end.setHours(end.getHours() + 1);
-
-      var model = subject._createModel(date);
+      var model = subject._createModel(new Date(2012, 0, 1));
 
       assert.hasProperties(
         model,
-        { startDate: start, endDate: end }
+        {
+          startDate: new Date(2012, 0, 1, 8),
+          endDate: new Date(2012, 0, 1, 9)
+        }
       );
     });
 
-    test('time is greater then now', function() {
+    test('time is today', function() {
       var now = new Date();
-      var start = new Date(
-        now.getFullYear(),
-        now.getMonth(),
-        now.getDate(),
-        now.getHours() + 10
-      );
-
-      var end = new Date(start.valueOf());
-      end.setHours(end.getHours() + 1);
+      var start = new Date(now.getTime());
+      start.setHours(0, 0, 0, 0);
+      // defaults to next hour
+      var realStart = new Date(now.getTime());
+      realStart.setHours(now.getHours() + 1, 0, 0, 0);
+      var end = new Date(now.getTime());
+      end.setHours(now.getHours() + 2, 0, 0, 0);
 
       var model = subject._createModel(start);
 
       assert.hasProperties(
         model,
-        { startDate: start, endDate: end }
+        { startDate: realStart, endDate: end }
+      );
+    });
+
+    test('time is greater then now', function() {
+      var now = new Date();
+      var year = now.getFullYear() + 1;
+      var start = new Date(year, 6, 23);
+      var model = subject._createModel(start);
+
+      assert.hasProperties(
+        model,
+        {
+          startDate: new Date(year, 6, 23, 8),
+          endDate: new Date(year, 6, 23, 9)
+        }
       );
     });
   });
+});
 
 });

@@ -3,57 +3,54 @@
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 'use strict';
+/* globals waitFor, finish */
+/* exported GaiaLockScreen */
 
 var GaiaLockScreen = {
 
-  unlock: function() {
-
+  unlock: function(forcibly) {
     let setlock = window.wrappedJSObject.SettingsListener.getSettingsLock();
+    let service = window.wrappedJSObject.Service;
     let obj = {'screen.timeout': 0};
     setlock.set(obj);
 
-    window.wrappedJSObject.ScreenManager.turnScreenOn();
-
     waitFor(
       function() {
-        window.wrappedJSObject.LockScreen.unlock();
+        service.request('unlock', { forcibly: forcibly });
         waitFor(
           function() {
-            finish(window.wrappedJSObject.LockScreen.locked);
+            finish(service.locked);
           },
           function() {
-            return !window.wrappedJSObject.LockScreen.locked;
+            return !service.locked;
           }
         );
       },
       function() {
-        return !!window.wrappedJSObject.LockScreen;
+        return !!service;
       }
     );
   },
 
-  lock: function() {
-
+  lock: function(forcibly) {
+    let service = window.wrappedJSObject.Service;
     let setlock = window.wrappedJSObject.SettingsListener.getSettingsLock();
     let obj = {'screen.timeout': 0};
     setlock.set(obj);
-
-    window.wrappedJSObject.ScreenManager.turnScreenOn();
-
     waitFor(
       function() {
-        window.wrappedJSObject.LockScreen.lock();
+      service.request('lock', { forcibly: forcibly });
         waitFor(
           function() {
-            finish(!window.wrappedJSObject.LockScreen.locked);
+            finish(!service.locked);
           },
           function() {
-            return window.wrappedJSObject.LockScreen.locked;
+            return service.locked;
           }
         );
       },
       function() {
-        return !!window.wrappedJSObject.LockScreen;
+        return !!service;
       }
     );
   }

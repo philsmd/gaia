@@ -1,5 +1,7 @@
 'use strict';
 
+/* global GridManager */
+
 /*
  * Icon constructor
  *
@@ -18,18 +20,16 @@ function Icon(descriptor, app) {
 
 
 // Support rendering icons for different screens
-var BASE_WIDTH = 320;
-var SCALE_RATIO = window.innerWidth / BASE_WIDTH;
-var MIN_ICON_SIZE = 52 * SCALE_RATIO;
-var MAX_ICON_SIZE = 60 * SCALE_RATIO;
-
-var DRAGGING_TRANSITION = '-moz-transform .3s';
+var SCALE_RATIO = window.devicePixelRatio;
+var MAX_ICON_SIZE = 60;
+var ICON_PADDING_IN_CANVAS = 4;
 
 Icon.prototype = {
 
   MAX_ICON_SIZE: MAX_ICON_SIZE,
 
-  MIN_ICON_SIZE: MIN_ICON_SIZE,
+  // It defines the time (in ms) to ensure that the onDragStop method finishes
+  FALLBACK_DRAG_STOP_DELAY: 1000,
 
   DEFAULT_BOOKMARK_ICON_URL: window.location.protocol + '//' +
                     window.location.host + '/style/images/default_favicon.png',
@@ -40,11 +40,17 @@ Icon.prototype = {
   CANCELED_ICON_URL: window.location.protocol + '//' + window.location.host +
                     '/style/images/app_paused.png',
 
+  // App icons shadow settings
+  SHADOW_BLUR: 5,
+  SHADOW_OFFSET_Y: 2,
+  SHADOW_COLOR: 'rgba(0,0,0,0.05)',
+
   // These properties will be copied from the descriptor onto the icon's HTML
   // element dataset and allow us to uniquely look up the Icon object from
   // the HTML element.
   _descriptorIdentifiers: ['manifestURL', 'entry_point', 'bookmarkURL',
-                           'useAsyncPanZoom'],
+                           'desiredPos', 'desiredScreen',
+                           'type'],
 
   /**
    * The Application (or Bookmark) object corresponding to this icon.
@@ -62,21 +68,18 @@ Icon.prototype = {
   },
 
   isOfflineReady: function icon_isOfflineReady() {
-    return !(this.descriptor.isHosted &&
+    return this.descriptor.type === GridItemsFactory.TYPE.COLLECTION ||
+      !(this.descriptor.isHosted &&
       !this.descriptor.hasOfflineCache ||
-      this.descriptor.isBookmark);
+      this.descriptor.type === GridItemsFactory.TYPE.BOOKMARK);
   },
 
   /*
    * Renders the icon into the page
-   *
-   * @param{Object} where the icon should be rendered
-   *
-   * @param{Object} where the draggable element should be appened
    */
-  render: function icon_render(target) {
+  render: function icon_render() {
     /*
-     * <li role="button" aria-label="label" class="icon" data-manifestURL="zzz">
+     * <li role="link" aria-label="label" class="icon" data-manifestURL="zzz">
      *   <div>
      *     <img role="presentation" src="the icon image path"></img>
      *     <span class="label">label</span>
@@ -86,23 +89,32 @@ Icon.prototype = {
      */
 
     var container = this.container = document.createElement('li');
-    this.container.dataset.offlineReady = this.isOfflineReady();
+    var dataset = container.dataset;
+
+    dataset.offlineReady = this.isOfflineReady();
     container.className = 'icon';
     if (this.descriptor.hidden) {
       delete this.descriptor.hidden;
-      container.dataset.visible = false;
+      dataset.visible = false;
     }
 
     var descriptor = this.descriptor;
-    container.dataset.isIcon = true;
+    dataset.isIcon = true;
     this._descriptorIdentifiers.forEach(function(prop) {
       var value = descriptor[prop];
-      if (value)
-        container.dataset[prop] = value;
+      if (value || value === 0)
+        dataset[prop] = value;
     });
 
-    var localizedName = descriptor.localizedName || descriptor.name;
-    container.setAttribute('role', 'button');
+    // Collection (as bookmarks)
+    if (descriptor.type === GridItemsFactory.TYPE.COLLECTION) {
+      dataset.isCollection = true;
+      dataset.collectionId = descriptor.id;
+      dataset.collectionName = descriptor.name;
+    }
+
+    var localizedName = this.getName();
+    container.setAttribute('role', 'link');
     container.setAttribute('aria-label', localizedName);
 
     // Icon container
@@ -111,8 +123,8 @@ Icon.prototype = {
     // Image
     var img = this.img = new Image();
     img.setAttribute('role', 'presentation');
-    img.width = MAX_ICON_SIZE + 4 * SCALE_RATIO;
-    img.height = MAX_ICON_SIZE + 4 * SCALE_RATIO;
+    img.width = MAX_ICON_SIZE + ICON_PADDING_IN_CANVAS;
+    img.height = MAX_ICON_SIZE + ICON_PADDING_IN_CANVAS;
     img.style.visibility = 'hidden';
     if (descriptor.renderedIcon) {
       this.displayRenderedIcon();
@@ -140,8 +152,6 @@ Icon.prototype = {
       this.appendOptions();
     }
 
-    target.appendChild(container);
-
     if (this.downloading) {
       //XXX: Bug 816043 We need to force the repaint to show the span
       // with the label and the animation (associated to the span)
@@ -150,8 +160,9 @@ Icon.prototype = {
     }
   },
 
-  appendOptions: function icon_appendOptions() {
-    var options = this.container.querySelector('.options');
+  appendOptions: function icon_appendOptions(container) {
+    container = container || this.container;
+    var options = container.querySelector('.options');
     if (options) {
       return;
     }
@@ -160,7 +171,7 @@ Icon.prototype = {
     options = document.createElement('span');
     options.className = 'options';
     options.dataset.isIcon = true;
-    this.container.appendChild(options);
+    container.appendChild(options);
   },
 
   removeOptions: function icon_removeOptions() {
@@ -198,7 +209,7 @@ Icon.prototype = {
       icon: this,
       success: function(blob) {
         this.loadImageData(blob);
-      },
+      }.bind(this),
       error: function() {
         if (this.icon && !this.downloading &&
             this.icon.classList.contains('loading')) {
@@ -206,12 +217,12 @@ Icon.prototype = {
           this.img.src = null;
         }
         this.loadCachedIcon();
-      }
+      }.bind(this)
     });
   },
 
   loadCachedIcon: function icon_loadCachedImage() {
-    var oldRenderedIcon = this.descriptor.oldRenderedIcon;
+    var oldRenderedIcon = this.oldRenderedIcon;
     if (oldRenderedIcon && oldRenderedIcon instanceof Blob) {
       this.renderBlob(oldRenderedIcon);
     } else {
@@ -232,6 +243,17 @@ Icon.prototype = {
       img.onload = img.onerror = null;
       window.URL.revokeObjectURL(img.src);
       self.renderImage(img);
+      self.isDefaultIcon = false;
+
+      // real icon is ready (not default icon)
+      if (!self.app.downloading &&
+          self.descriptor.type !== GridItemsFactory.TYPE.COLLECTION) {
+        window.dispatchEvent(new CustomEvent('appInstalled', {
+          'detail': {
+            'app': self.app
+          }
+        }));
+      }
     };
 
     img.onerror = function icon_loadError() {
@@ -265,24 +287,26 @@ Icon.prototype = {
       self.renderBlob(blob);
       image.onload = image.onerror = null;
     }
+
+    this.isDefaultIcon = true;
   },
 
   renderImageForBookMark: function icon_renderImageForBookmark(img) {
     var self = this;
     var canvas = document.createElement('canvas');
-    canvas.width = MAX_ICON_SIZE + 4 * SCALE_RATIO;
-    canvas.height = MAX_ICON_SIZE + 4 * SCALE_RATIO;
+    canvas.width = (MAX_ICON_SIZE + ICON_PADDING_IN_CANVAS) * SCALE_RATIO;
+    canvas.height = (MAX_ICON_SIZE + ICON_PADDING_IN_CANVAS) * SCALE_RATIO;
     var ctx = canvas.getContext('2d');
 
     // Draw the background
     var background = new Image();
     background.src = 'style/images/default_background.png';
     background.onload = function icon_loadBackgroundSuccess() {
-      ctx.shadowColor = 'rgba(0,0,0,0.8)';
-      ctx.shadowBlur = 2;
-      ctx.shadowOffsetY = 2;
-      ctx.drawImage(background, 2 * SCALE_RATIO,
-                    2 * SCALE_RATIO, MAX_ICON_SIZE, MAX_ICON_SIZE);
+      ctx.shadowColor = self.SHADOW_COLOR;
+      ctx.shadowBlur = self.SHADOW_BLUR;
+      ctx.shadowOffsetY = self.SHADOW_OFFSET_Y;
+      ctx.drawImage(background, 2 * SCALE_RATIO, 2 * SCALE_RATIO,
+                    MAX_ICON_SIZE * SCALE_RATIO, MAX_ICON_SIZE * SCALE_RATIO);
       // Disable smoothing on icon resize
       ctx.shadowBlur = 0;
       ctx.shadowOffsetY = 0;
@@ -299,15 +323,24 @@ Icon.prototype = {
       return;
     }
 
+    var canvas = this.createCanvas(img, this.descriptor.type);
+    canvas.toBlob(this.renderBlob.bind(this));
+  },
+
+  createCanvas: function icon_createCanvas(img, type) {
     var canvas = document.createElement('canvas');
-    canvas.width = MAX_ICON_SIZE + 4 * SCALE_RATIO;
-    canvas.height = MAX_ICON_SIZE + 4 * SCALE_RATIO;
+    canvas.width = (MAX_ICON_SIZE + ICON_PADDING_IN_CANVAS) * SCALE_RATIO;
+    canvas.height = (MAX_ICON_SIZE + ICON_PADDING_IN_CANVAS) * SCALE_RATIO;
 
     var ctx = canvas.getContext('2d');
     ctx.clearRect(0, 0, canvas.width, canvas.height);
-    ctx.shadowColor = 'rgba(0,0,0,0.8)';
-    ctx.shadowBlur = 2;
-    ctx.shadowOffsetY = 2;
+
+    // Collection icons are self contained and should NOT be manipulated
+    if (type !== GridItemsFactory.TYPE.COLLECTION) {
+      ctx.shadowColor = this.SHADOW_COLOR;
+      ctx.shadowBlur = this.SHADOW_BLUR;
+      ctx.shadowOffsetY = this.SHADOW_OFFSET_Y;
+    }
 
     // Deal with very small or very large icons
     img.width =
@@ -315,21 +348,27 @@ Icon.prototype = {
     img.height =
         Math.min(MAX_ICON_SIZE, Math.max(img.height, MAX_ICON_SIZE));
 
-    var width = Math.min(img.width, canvas.width - 4 * SCALE_RATIO);
-    var height = Math.min(img.width, canvas.height - 4 * SCALE_RATIO);
+    var width = Math.min(img.width * SCALE_RATIO,
+                         canvas.width - ICON_PADDING_IN_CANVAS * SCALE_RATIO);
+    var height = Math.min(img.width * SCALE_RATIO,
+                          canvas.height - ICON_PADDING_IN_CANVAS * SCALE_RATIO);
     ctx.drawImage(img,
                   (canvas.width - width) / 2,
                   (canvas.height - height) / 2,
                   width, height);
     ctx.fill();
 
-    canvas.toBlob(this.renderBlob.bind(this));
+    return canvas;
   },
 
   // The url that is passed as a parameter to the callback must be revoked
   loadRenderedIcon: function icon_loadRenderedIcon(callback) {
     var img = this.img;
-    img.src = window.URL.createObjectURL(this.descriptor.renderedIcon);
+    var blob = this.descriptor.renderedIcon;
+    if (!blob) {
+      blob = GridManager.getBlobByDefault(this.app);
+    }
+    img.src = window.URL.createObjectURL(blob);
     if (callback) {
       img.onload = img.onerror = function done() {
         callback(this.src);
@@ -371,6 +410,10 @@ Icon.prototype = {
   },
 
   updateAppStatus: function icon_updateAppStatus(app) {
+    // change default icon size for tablet+ device
+    if (!ScreenLayout.getCurrentLayout('tiny')) {
+      MAX_ICON_SIZE = 90;
+    }
     if (app) {
       this.downloading = app.downloading;
       this.cancelled = (app.installState === 'pending') && !app.downloading;
@@ -387,14 +430,14 @@ Icon.prototype = {
     this.descriptor = descriptor;
     descriptor.removable === true ? this.appendOptions() : this.removeOptions();
 
-    // Update offline availability
+    // Update dataset properties
     this.container.dataset.offlineReady = this.isOfflineReady();
 
     if (descriptor.updateTime == oldDescriptor.updateTime &&
         descriptor.icon == oldDescriptor.icon) {
       this.descriptor.renderedIcon = oldDescriptor.renderedIcon;
     } else {
-      this.descriptor.oldRenderedIcon = oldDescriptor.renderedIcon;
+      this.oldRenderedIcon = oldDescriptor.renderedIcon;
       this.fetchImageData();
     }
     if (descriptor.updateTime != oldDescriptor.updateTime ||
@@ -422,11 +465,47 @@ Icon.prototype = {
   },
 
   /*
+   * Sets a non-translationable name
+   *
+   * @param{string} non-translationable name
+   */
+  setName: function icon_setName(name) {
+    if (this.label.textContent === name) {
+      return;
+    }
+
+    this.label.textContent = this.descriptor.customName = name;
+    if (this.descriptor.type === GridItemsFactory.TYPE.BOOKMARK) {
+      this.app.setName(name);
+    }
+    this.applyOverflowTextMask();
+    GridManager.markDirtyState();
+  },
+
+  /*
+   * Returns the name icon
+   */
+  getName: function icon_getName() {
+    var desc = this.descriptor;
+    return desc.customName || desc.localizedName || desc.name;
+  },
+
+  /*
+   * Sets the icon's image
+   *
+   * @param{string} the new icon
+   */
+  setImage: function icon_setImage(image) {
+    this.descriptor.icon = image;
+    this.fetchImageData();
+  },
+
+  /*
    * Translates the label of the icon
    */
   translate: function icon_translate() {
     var descriptor = this.descriptor;
-    if (descriptor.bookmarkURL)
+    if (descriptor.customName)
       return;
 
     var app = this.app;
@@ -437,12 +516,20 @@ Icon.prototype = {
     if (!manifest)
       return;
 
-    var iconsAndNameHolder = manifest;
-    var entryPoint = descriptor.entry_point;
-    if (entryPoint)
-      iconsAndNameHolder = manifest.entry_points[entryPoint];
+    var localizedName = manifest.name;
 
-    var localizedName = new ManifestHelper(iconsAndNameHolder).name;
+    if (descriptor.type === GridItemsFactory.TYPE.COLLECTION) {
+      // try to translate, but fall back to current name
+      // (translation might fail for custom collection name)
+      localizedName = navigator.mozL10n.get(manifest.name) || manifest.name;
+    } else if (descriptor.type !== GridItemsFactory.TYPE.BOOKMARK) {
+      var iconsAndNameHolder = manifest;
+      var entryPoint = descriptor.entry_point;
+      if (entryPoint)
+        iconsAndNameHolder = manifest.entry_points[entryPoint];
+
+      localizedName = new ManifestHelper(iconsAndNameHolder).name;
+    }
 
     this.label.textContent = localizedName;
     if (descriptor.localizedName != localizedName) {
@@ -466,19 +553,27 @@ Icon.prototype = {
 
     var draggableElem = this.draggableElem = document.createElement('div');
     draggableElem.className = 'draggable';
+    if (this.descriptor.type !== GridItemsFactory.TYPE.COLLECTION) {
+      // Collections cannot be appended to others so this operation isn't needed
+      this.savePosition(draggableElem.dataset);
+    }
 
     // For some reason, cloning and moving a node re-triggers the blob
     // URI to be validated. So we assign a new blob URI to the image
     // and don't revoke it until we're finished with the animation.
     this.loadRenderedIcon();
 
-    var icon = this.icon.cloneNode();
+    var icon = this.icon.cloneNode(true);
     var img = icon.querySelector('img');
     img.style.visibility = 'hidden';
     img.onload = img.onerror = function unhide() {
       img.style.visibility = 'visible';
     };
     draggableElem.appendChild(icon);
+
+    if (this.descriptor.removable === true) {
+      this.appendOptions(icon);
+    }
 
     var container = this.container;
     container.dataset.dragging = 'true';
@@ -494,6 +589,30 @@ Icon.prototype = {
     document.body.appendChild(draggableElem);
   },
 
+  /*
+   * Saves the current container (page or dock) and  position.
+   *
+   * * pageType -> 'dock' or 'page' types
+   * * pageIndex -> index of page (no needed for dock)
+   * * iconIndex -> index of icon inside page or dock container
+   *
+   * @param{Object} Source object to set results
+   */
+  savePosition: function icon_savePosition(obj) {
+    var page;
+
+    if (this.container.parentNode === DockManager.page.olist) {
+      page = DockManager.page;
+      obj.pageType = 'dock';
+    } else {
+      page = GridManager.pageHelper.getCurrent();
+      obj.pageType = 'page';
+      obj.pageIndex = GridManager.pageHelper.getCurrentPageNumber();
+    }
+
+    obj.iconIndex = page.getIconIndex(this.container);
+  },
+
   addClassToDragElement: function icon_addStyleToDragElement(className) {
     this.draggableElem.classList.add(className);
   },
@@ -503,32 +622,63 @@ Icon.prototype = {
   },
 
   /*
-   * This method is invoked when the drag gesture finishes
+   * This method is invoked when the drag gesture finishes. If x and y are
+   * defined, the icon flies to this position
+   *
+   * @param{Function} callback will be performed when animations finishes
+   *
+   * @param{Integer} x-coordinate
+   *
+   * @param{Integer} y-coordinate
+   *
+   * @param{Integer} scale factor of the animation
    */
-  onDragStop: function icon_onDragStop(callback) {
+  onDragStop: function icon_onDragStop(callback, tx , ty, scale) {
     var container = this.container;
 
-    var rect = container.getBoundingClientRect();
-    var x = (Math.abs(rect.left + rect.right) / 2) % window.innerWidth;
-    x -= this.initXCenter;
+    var x = tx,
+        y = ty;
 
-    var y = (rect.top + rect.bottom) / 2 +
-            (this.initHeight - (rect.bottom - rect.top)) / 2;
-    y -= this.initYCenter;
+    if (typeof x === 'undefined') {
+      var rect = container.getBoundingClientRect();
+      x = (Math.abs(rect.left + rect.right) / 2) % window.innerWidth;
+      x -= this.initXCenter;
+
+      y = (rect.top + rect.bottom) / 2 +
+          (this.initHeight - (rect.bottom - rect.top)) / 2;
+      y -= this.initYCenter;
+    }
 
     var draggableElem = this.draggableElem;
     var style = draggableElem.style;
-    style.MozTransition = '-moz-transform .4s';
-    style.MozTransform = 'translate(' + x + 'px,' + y + 'px)';
-    draggableElem.querySelector('div').style.MozTransform = 'scale(1)';
+    style.transition = 'transform .4s';
+    style.transform = 'translate(' + x + 'px,' + y + 'px)';
 
-    draggableElem.addEventListener('transitionend', function draggableEnd(e) {
-      draggableElem.removeEventListener('transitionend', draggableEnd);
+    var finishDrag = function() {
       delete container.dataset.dragging;
-      document.body.removeChild(draggableElem);
-      var img = draggableElem.querySelector('img');
-      window.URL.revokeObjectURL(img.src);
+      if (draggableElem) {
+        var img = draggableElem.querySelector('img');
+        window.URL.revokeObjectURL(img.src);
+        draggableElem.parentNode.removeChild(draggableElem);
+      }
       callback();
+    };
+
+    // We ensure that there is not an icon lost on the grid
+    var fallbackID = window.setTimeout(function() {
+      fallbackID = null;
+      finishDrag();
+    }, this.FALLBACK_DRAG_STOP_DELAY);
+
+    var content = draggableElem.querySelector('div');
+    scale = typeof scale !== 'undefined' ? scale : 1;
+    content.style.transform = 'scale(' + scale + ')';
+    content.addEventListener('transitionend', function tEnd(e) {
+      e.target.removeEventListener('transitionend', tEnd);
+      if (fallbackID !== null) {
+        window.clearTimeout(fallbackID);
+        finishDrag();
+      }
     });
   },
 
@@ -542,10 +692,21 @@ Icon.prototype = {
 
   getWidth: function icon_getWidth() {
     return this.container.getBoundingClientRect().width;
+  },
+
+  /*
+   * Returns the descriptor object
+   */
+  getDescriptor: function icon_getDescriptor() {
+    if (this.isDefaultIcon) {
+      delete this.descriptor.renderedIcon;
+    }
+
+    return this.descriptor;
   }
 };
 
-function TemplateIcon(isBookmark) {
+function TemplateIcon(iconable) {
   var descriptor = {
     name: 'templateIcon',
     hidden: true,
@@ -553,7 +714,7 @@ function TemplateIcon(isBookmark) {
   };
 
   var app = {};
-  if (isBookmark) {
+  if (iconable) {
     app.iconable = true;
   }
 
@@ -585,18 +746,27 @@ TemplateIcon.prototype = {
  * @param {Array} icons [optional]
  *                List of Icon objects.
  */
-function Page(container, icons) {
+function Page(container, icons, numberOfIcons) {
   this.container = this.movableContainer = container;
   if (icons)
     this.render(icons);
   this.iconsWhileDragging = [];
+  this.maxIcons = numberOfIcons || GridManager.pageHelper.maxIconsPerPage;
 }
 
 Page.prototype = {
 
-  // After launching an app we disable the page during <this time> in order to
-  // prevent multiple open-app animations
-  DISABLE_TAP_EVENT_DELAY: 600,
+  ICONS_PER_ROW: 4,
+
+  DRAGGING_TRANSITION: 'transform .3s',
+
+  REARRANGE_DELAY: 50,
+
+  FALLBACK_READY_EVENT_DELAY: 1000,
+
+  // After launching an app we disable the page during this time (ms)
+  // in order to prevent multiple open-app animations
+  DISABLE_TAP_EVENT_DELAY: 500,
 
   /*
    * Renders a page for a list of apps
@@ -605,9 +775,11 @@ Page.prototype = {
    *               List of Icon objects.
    */
   render: function pg_render(icons) {
+    // By default the page is hidden unless it is the current page.
+    this.container.setAttribute('aria-hidden', true);
     this.olist = document.createElement('ol');
-    for (var i = 0; i < icons.length; i++) {
-      this.appendIcon(icons[i]);
+    for (var i = 0, icon; icon = icons[i++];) {
+      this.appendIcon(icon);
     }
     this.container.appendChild(this.olist);
   },
@@ -621,8 +793,8 @@ Page.prototype = {
   moveByWithEffect: function pg_moveByWithEffect(scrollX, duration) {
     var container = this.movableContainer;
     var style = container.style;
-    style.MozTransform = 'translateX(' + scrollX + 'px)';
-    style.MozTransition = '-moz-transform ' + duration + 'ms ease';
+    style.transform = 'translateX(' + scrollX + 'px)';
+    style.transition = 'transform ' + duration + 'ms ease';
   },
 
   /*
@@ -632,17 +804,17 @@ Page.prototype = {
    */
   moveBy: function pg_moveBy(scrollX) {
     var style = this.movableContainer.style;
-    style.MozTransform = 'translateX(' + scrollX + 'px)';
-    style.MozTransition = '';
+    style.transform = 'translateX(' + scrollX + 'px)';
+    style.transition = '';
   },
 
   ready: true,
 
   setReady: function pg_setReady(value) {
+    this.ready = value;
     if (value) {
       this.container.dispatchEvent(new CustomEvent('onpageready'));
     }
-    this.ready = value;
   },
 
   /*
@@ -666,7 +838,6 @@ Page.prototype = {
       if (this.iconsWhileDragging.length === 0)
         this.iconsWhileDragging = Array.prototype.slice.call(iconList, 0,
                                                              iconList.length);
-
       this.animate(this.iconsWhileDragging, originIcon.container,
                    targetIcon.container);
     } else {
@@ -678,7 +849,7 @@ Page.prototype = {
     var draggableIndex = children.indexOf(draggableNode);
     var targetIndex = children.indexOf(targetNode);
 
-    if (draggableIndex === -1 || targetIndex === -1) {
+    if (draggableIndex < 0 || targetIndex < 0 || targetIndex >= this.maxIcons) {
       // Index is outside the bounds of the array, it doesn't make sense
       setTimeout(this.setReady.bind(this, true));
       return;
@@ -690,8 +861,8 @@ Page.prototype = {
     this.placeIcon(draggableNode, draggableIndex, targetIndex);
 
     var self = this;
-    targetNode.addEventListener('transitionend', function onTransitionEnd() {
-      targetNode.removeEventListener('transitionend', onTransitionEnd);
+    targetNode.addEventListener('transitionend', function onTransitionEnd(e) {
+      e.target.removeEventListener('transitionend', onTransitionEnd);
       children.splice(draggableIndex, 1);
       children.splice(targetIndex, 0, draggableNode);
       setTimeout(self.setReady.bind(self, true));
@@ -699,16 +870,16 @@ Page.prototype = {
 
     if (upward) {
       for (var i = draggableIndex + 1; i <= targetIndex; i++)
-        this.placeIcon(children[i], i, i - 1, DRAGGING_TRANSITION);
+        this.placeIcon(children[i], i, i - 1, this.DRAGGING_TRANSITION);
     } else {
       for (var i = targetIndex; i < draggableIndex; i++)
-        this.placeIcon(children[i], i, i + 1, DRAGGING_TRANSITION);
+        this.placeIcon(children[i], i, i + 1, this.DRAGGING_TRANSITION);
     }
   },
 
   doDragLeave: function pg_doReArrange(callback, reflow) {
     this.iconsWhileDragging.forEach(function reset(node) {
-      node.style.MozTransform = node.style.MozTransition = '';
+      node.style.transform = node.style.transition = '';
       delete node.dataset.posX;
       delete node.dataset.posY;
     });
@@ -729,11 +900,25 @@ Page.prototype = {
 
     if (!this.ready) {
       var self = this;
+      var ensureCallbackID = null;
+      var onPageReady = function onPageReady(e) {
+        e.target.removeEventListener('onpageready', onPageReady);
+        if (ensureCallbackID !== null) {
+          window.clearTimeout(ensureCallbackID);
+          self.doDragLeave(callback, reflow);
+        }
+      };
+      self.container.addEventListener('onpageready', onPageReady);
 
-      self.container.addEventListener('onpageready', function onPageReady() {
+      // We ensure that there is not a transitionend lost on dragging
+      ensureCallbackID = window.setTimeout(function() {
+        ensureCallbackID = null;
         self.container.removeEventListener('onpageready', onPageReady);
-        self.doDragLeave(callback, reflow);
-      });
+        self.doDragLeave(function onfinish() {
+          self.setReady(true);
+          callback();
+        }, reflow);
+      }, this.FALLBACK_READY_EVENT_DELAY);
 
       return;
     }
@@ -746,14 +931,16 @@ Page.prototype = {
       return;
 
     var x = node.dataset.posX = parseInt(node.dataset.posX || 0) +
-                      ((Math.floor(to % 4) - Math.floor(from % 4)) * 100);
+                      ((Math.floor(to % this.ICONS_PER_ROW) -
+                        Math.floor(from % this.ICONS_PER_ROW)) * 100);
     var y = node.dataset.posY = parseInt(node.dataset.posY || 0) +
-                      ((Math.floor(to / 4) - Math.floor(from / 4)) * 100);
+                      ((Math.floor(to / this.ICONS_PER_ROW) -
+                        Math.floor(from / this.ICONS_PER_ROW)) * 100);
 
     window.mozRequestAnimationFrame(function() {
-      node.style.MozTransform = 'translate(' + x + '%, ' + y + '%)';
+      node.style.transform = 'translate(' + x + '%, ' + y + '%)';
       if (transition)
-        node.style.MozTransition = transition;
+        node.style.transition = transition;
     });
   },
 
@@ -761,46 +948,103 @@ Page.prototype = {
    * Implements the tap behaviour
    *
    * @param{Object} DOM element
+   *
+   * @param{Function} callback
    */
-  tap: function pg_tap(elem) {
+  tap: function pg_tap(elem, callback) {
     if (Homescreen.isInEditMode()) {
       if (elem.classList.contains('options')) {
         var icon = GridManager.getIcon(elem.parentNode.dataset);
         if (icon.app)
-          Homescreen.showAppDialog(icon.app);
+          Homescreen.showAppDialog(icon);
+      } else if (elem.dataset.type === GridItemsFactory.TYPE.BOOKMARK) {
+        var icon = GridManager.getIcon(elem.dataset);
+        if (icon.app) {
+          Homescreen.showEditBookmarkDialog(icon);
+        }
       }
-    } else if ('isIcon' in elem.dataset &&
-               !this.olist.getAttribute('disabled')) {
+      callback();
+    } else if ('isIcon' in elem.dataset && this.olist === elem.parentNode &&
+               !document.body.hasAttribute('disabled-tapping')) {
       var icon = GridManager.getIcon(elem.dataset);
       if (!icon.app)
         return;
 
       if (icon.descriptor.entry_point) {
+        this.disableTap(callback);
         icon.app.launch(icon.descriptor.entry_point);
-        this.disableTap();
         return;
       }
 
       if (icon.cancelled) {
         GridManager.showRestartDownloadDialog(icon);
+        callback();
         return;
       }
+
+      this.disableTap(callback);
       icon.app.launch();
-      this.disableTap();
     }
   },
 
   /*
    * Disables the tap event for the page
    *
-   * @param{Integer} milliseconds
+   * @param{Function} callback
    */
-  disableTap: function pg_disableTap(icon, time) {
-    var olist = this.olist;
-    olist.setAttribute('disabled', true);
-    setTimeout(function disableTapTimeout() {
-      olist.removeAttribute('disabled');
-    }, time || this.DISABLE_TAP_EVENT_DELAY);
+  disableTap: function pg_disableTap(callback) {
+    document.body.setAttribute('disabled-tapping', true);
+
+    var disableTapTimeout = null;
+
+    var enableTap = function enableTap() {
+      document.removeEventListener('visibilitychange', enableTap);
+      document.removeEventListener('collectionopened', enableTap);
+      window.removeEventListener('hashchange', enableTap);
+      if (disableTapTimeout !== null) {
+        window.clearTimeout(disableTapTimeout);
+        disableTapTimeout = null;
+      }
+      document.body.removeAttribute('disabled-tapping');
+      callback && callback();
+    };
+
+    // We are going to enable the tapping feature under these conditions:
+    // 1. The opened app is in foreground
+    document.addEventListener('visibilitychange', enableTap);
+    // 2. The opened collection is in foreground
+    document.addEventListener('collectionopened', enableTap);
+    // 3. Users click on home button quickly while app are opening
+    window.addEventListener('hashchange', enableTap);
+    // 4. After this time out
+    disableTapTimeout = window.setTimeout(enableTap,
+        this.DISABLE_TAP_EVENT_DELAY);
+
+  },
+
+  /*
+   * Adds an icon at the position specified
+   *
+   * @param{Object} icon object
+   * @param{Number} index to insert at
+   */
+  appendIconAt: function pg_appendIconAt(icon, index) {
+    var olist = this.olist,
+        children = this.olist.children;
+
+    if (children[index] && children[index] === icon.container) {
+      return;
+    }
+
+    if (!icon.container) {
+      icon.render();
+    }
+
+    if (children[index]) {
+      olist.insertBefore(icon.container, children[index]);
+    } else {
+      olist.appendChild(icon.container);
+    }
   },
 
   /*
@@ -809,14 +1053,12 @@ Page.prototype = {
    * @param{Object} icon object
    */
   prependIcon: function pg_prependIcon(icon) {
-    this.setReady(false);
     var olist = this.olist;
     if (olist.children.length > 0) {
       olist.insertBefore(icon.container, olist.firstChild);
     } else {
       olist.appendChild(icon.container);
     }
-    this.setReady(true);
   },
 
   /*
@@ -828,13 +1070,29 @@ Page.prototype = {
     return icon;
   },
 
+  /*
+   * Returns the icons which desiredScreen is bigger than position
+   * @param{int} position is DesiredScreen value which with compare
+   */
+  getMisplacedIcons: function pg_getMisplacedIcons(currentScreen) {
+    var misplaced = [];
+    var appsDesiredScreen =
+         this.olist.querySelectorAll('li[data-desired-screen]');
+    var numApps = appsDesiredScreen.length;
+    for (var i = numApps - 1; i >= 0; i--) {
+      var desiredScreen = appsDesiredScreen[i].dataset.desiredScreen;
+      if (desiredScreen > currentScreen) {
+        misplaced.push(GridManager.getIcon(appsDesiredScreen[i].dataset));
+      }
+    }
+    return misplaced;
+  },
+
   insertBeforeLastIcon: function pg_insertBeforeLastIcon(icon) {
-    this.setReady(false);
     var olist = this.olist;
     if (olist.children.length > 0) {
       olist.insertBefore(icon.container, olist.lastChild);
     }
-    this.setReady(true);
   },
 
   /*
@@ -851,6 +1109,25 @@ Page.prototype = {
   },
 
   /*
+   * Returns the last visible icon of the page
+   */
+  getLastVisibleIcon: function pg_getLastVisibleIcon() {
+    if (this.getNumIcons() <= this.maxIcons) {
+      return this.getLastIcon();
+    } else {
+      var node = this.olist.children[this.maxIcons - 1];
+      if (this.iconsWhileDragging.length > 0)
+        node = this.iconsWhileDragging[this.maxIcons - 1];
+
+      if (!node) {
+        return null;
+      }
+
+      return GridManager.getIcon(node.dataset);
+    }
+  },
+
+  /*
    * Returns the first icon of the page
    */
   getFirstIcon: function pg_getFirstIcon() {
@@ -864,18 +1141,69 @@ Page.prototype = {
   },
 
   /*
+   * Move the apps in position higher than 'pos' one position ahead if they have
+   * a desiredPosition lower than their actual position
+   */
+  _moveAhead: function pg_moveAhead(pos) {
+    // When a new sv app is installed, the previously sv apps installed in
+    // higher positions will have been moved.
+    // This function restores their previous position if needed
+    var iconList = this.olist.children;
+    var numIcons = iconList.length;
+
+    for (var i = pos; i < numIcons; i++) {
+      var iconPos = iconList[i].dataset && iconList[i].dataset.desiredPos;
+      if (i > iconPos) {
+        this.olist.insertBefore(iconList[i], iconList[i - 1]);
+      }
+    }
+  },
+
+  /*
+   * Return true if the Page has free space, return false otherwise
+   */
+  hasEmptySlot: function pg_hasEmptySlot() {
+    return this.getNumIcons() < this.maxIcons;
+  },
+
+  /*
+   * Insert an icon in the page
+   */
+  _insertIcon: function pg_insertIcon(icon) {
+    var iconList = this.olist.children;
+    var container = icon.container;
+
+    // Inserts the icon in the closest possible space to its desired position,
+    // keeping the order of all existing icons with desired position
+    if (icon.descriptor && icon.descriptor.desiredPos !== undefined &&
+        Configurator.isSimPresentOnFirstBoot) {
+      var desiredPos = icon.descriptor.desiredPos;
+      var manifest = icon.descriptor.manifestURL;
+      // Add to the installed SV apps array
+      GridManager.addPreviouslyInstalled(manifest);
+      var numIcons = iconList.length;
+      for (var i = 0; (i < numIcons) && (i <= desiredPos); i++) {
+        var iconPos = iconList[i].dataset && iconList[i].dataset.desiredPos;
+        if ((iconPos > desiredPos) || (i === desiredPos)) {
+          this.olist.insertBefore(container, iconList[i]);
+          this._moveAhead(i + 1);
+          return;
+        }
+      }
+    }
+    this.olist.appendChild(container);
+  },
+
+  /*
    * Appends an icon to the end of the page
    *
    * @param{Object} moz app or icon object
    */
   appendIcon: function pg_appendIcon(icon) {
     if (!icon.container) {
-      icon.render(this.olist, this.container);
-      return;
+      icon.render();
     }
-    this.setReady(false);
-    this.olist.appendChild(icon.container);
-    this.setReady(true);
+    this._insertIcon(icon);
   },
 
   /**
@@ -887,7 +1215,7 @@ Page.prototype = {
    * @param {Object} icon the icon to be added.
    */
   appendIconVisible: function pg_appendIconVisible(icon) {
-    if (this.getNumIcons() >= GridManager.pageHelper.maxIconsPerPage) {
+    if (this.getNumIcons() >= this.maxIcons) {
       this.insertBeforeLastIcon(icon);
     } else {
       this.appendIcon(icon);
@@ -923,8 +1251,20 @@ Page.prototype = {
     var nodes = this.olist.children;
     return Array.prototype.map.call(nodes, function marshall(node) {
       var icon = GridManager.getIcon(node.dataset);
-      return icon.descriptor;
+      return icon.getDescriptor();
     });
+  },
+
+  getIndex: function pg_getIndex() {
+    var pages = this.container.parentNode.children;
+    pages = Array.prototype.slice.call(pages, 0, pages.length);
+    return pages.indexOf(this.container);
+  },
+
+  getIconIndex: function pg_getIconIndex(icon) {
+    var icons = this.olist.children;
+    icons = Array.prototype.slice.call(icons, 0, icons.length);
+    return icons.indexOf(icon);
   }
 };
 
@@ -962,19 +1302,23 @@ dockProto.render = function dk_render(apps, target) {
 dockProto.moveByWithEffect = function dk_moveByWithEffect(scrollX, duration) {
   var container = this.movableContainer;
   var style = container.style;
-  style.MozTransform = 'translateX(' + scrollX + 'px)';
-  style.MozTransition = '-moz-transform ' + duration + 'ms ease';
+  style.transform = 'translateX(' + scrollX + 'px)';
+  style.transition = 'transform ' + duration + 'ms ease';
 };
 
 dockProto.moveByWithDuration = function dk_moveByWithDuration(scrollX,
                                                               duration) {
   var style = this.movableContainer.style;
-  style.MozTransform = 'translateX(' + scrollX + 'px)';
-  style.MozTransition = '-moz-transform ' + duration + 'ms ease';
+  style.transform = 'translateX(' + scrollX + 'px)';
+  style.transition = 'transform ' + duration + 'ms ease';
 };
 
 dockProto.getLeft = function dk_getLeft() {
   return this.olist.getBoundingClientRect().left;
+};
+
+dockProto.getTransform = function dk_getTransform() {
+  return this.movableContainer.style.transform;
 };
 
 /**
@@ -1001,12 +1345,12 @@ dockProto.placeIcon = function pg_placeIcon(node, from, to, transition) {
   var x = node.dataset.posX = parseInt(node.dataset.posX || 0) + (to - from) *
                               100;
 
-  node.style.MozTransform = 'translateX(' + x + '%)';
+  node.style.transform = 'translateX(' + x + '%)';
   if (transition)
-    node.style.MozTransition = transition;
+    node.style.transition = transition;
 };
 
-const TextOverflowDetective = (function() {
+var TextOverflowDetective = (function() {
 
   var iconFakeWrapperWidth;
   var iconFakeLabel;

@@ -52,69 +52,77 @@ var currentLanguage;
 var pendingPrediction;
 
 var Commands = {
-  setLanguage: function setLanguage(language) {
-    if (language !== currentLanguage) {
-      currentLanguage = language;
+  setLanguage: function setLanguage(language, data) {
+    if (language === currentLanguage) {
+      return;
+    }
+    currentLanguage = language;
 
-      var dicturl = 'dictionaries/' +
-        language.replace('-', '_').toLowerCase() +
-        '.dict';
-
-      var xhr = new XMLHttpRequest();
-      xhr.open('GET', dicturl, false);
-      xhr.responseType = 'arraybuffer';
-      xhr.send();
-      //
-      // XXX
-      // https://bugzilla.mozilla.org/show_bug.cgi?id=804395
-      // The app protocol doesn't seem to return a status code and
-      // we just get a zero-length array if the url is undefined
-      //
-      if (!xhr.response || xhr.response.byteLength === 0) {
-        log('error loading dictionary');
-        postMessage({ cmd: 'error', message: 'Unknown language: ' + language });
-      }
-      else {
-        try {
-          Predictions.setDictionary(xhr.response);
-        }
-        catch (e) {
-          postMessage({ cmd: 'error', message: e.message + ': ' + dicturl});
-        }
-      }
+    try {
+      Predictions.setDictionary(data);
+      postMessage({
+        cmd: 'success',
+        fn: 'setLanguage',
+        language: language
+      });
+    } catch (e) {
+      postMessage({
+        cmd: 'error',
+        message: 'setDictionary failed: ' + e
+      });
     }
   },
 
   setNearbyKeys: function setNearbyKeys(nearbyKeys) {
     try {
       Predictions.setNearbyKeys(nearbyKeys);
+      postMessage({ cmd: 'success', fn: 'setNearbyKeys' });
     }
     catch (e) {
-      postMessage({cmd: 'error',
-                   message: 'Predictions.setNearbyKeys(): ' + e.message});
+      postMessage({cmd: 'error', message: 'setNearbyKeys: ' + e.message});
     }
   },
 
   predict: function predict(prefix) {
+    var CANDIDATES_LOW = 24;
+    var CANDIDATES_HIGH = 50;
+    var TOO_LOW_THRESHOLD = 4;
+
     if (pendingPrediction)  // Make sure we're not still running a previous one
       pendingPrediction.abort();
 
-    // Ask for 3 predictions, considering 24 candidates that and considering
+    var noOfCandidates = prefix.length >= 2 && prefix.length <= 4 ?
+      CANDIDATES_HIGH :
+      CANDIDATES_LOW;
+
+    // Ask for 4 predictions, considering 50 candidates and considering
     // only words with an edit distance of 1 (i.e. make only one correction
     // per word)
-    pendingPrediction = Predictions.predict(prefix, 3, 24, 1,
+    pendingPrediction = Predictions.predict(prefix, 4, noOfCandidates, 1,
                                             success, error);
 
     function success(words) {
-      if (words.length) {
-        postMessage({ cmd: 'predictions', input: prefix, suggestions: words });
-        return;
+      if (words.length > 0) {
+        // If the quality of the suggestions is very low, up candidates
+        if (prefix.length > 4 && words[0][1] < TOO_LOW_THRESHOLD) {
+          Predictions.predict(prefix, 4, CANDIDATES_HIGH, 1,
+                    function(words) {
+                      postMessage({ cmd: 'predictions',
+                                    input: prefix,
+                                    suggestions: words });
+                    }, error);
+        }
+        else {
+          postMessage({
+            cmd: 'predictions', input: prefix, suggestions: words
+          });
+        }
       }
       else {
         // If we didn't find anything, try more candidates and a larger
         // edit distance to enlarge the search space.
         pendingPrediction =
-          Predictions.predict(prefix, 3, 60, 2,
+          Predictions.predict(prefix, 4, 60, 2,
                               function(words) {
                                 postMessage({ cmd: 'predictions',
                                               input: prefix,

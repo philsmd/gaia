@@ -10,7 +10,6 @@ const Cu = Components.utils;
 
 Cu.import("resource://gre/modules/XPCOMUtils.jsm");
 Cu.import("resource://gre/modules/Services.jsm");
-Cu.import('resource://gre/modules/ObjectWrapper.jsm');
 
 function ActivitiesDialog() {
   this._id = 0;
@@ -48,12 +47,14 @@ ActivitiesDialog.prototype = {
         return;
 
       content.removeEventListener("mozContentEvent", act_getChoice);
-      activity.callback.handleEvent(evt.detail.value ? evt.detail.value : -1);
+      activity.callback.handleEvent(evt.detail.value !== undefined
+                                    ? evt.detail.value
+                                    : -1);
     });
 
     let event = content.document.createEvent('CustomEvent');
     event.initCustomEvent('mozChromeEvent', true, true,
-                          ObjectWrapper.wrap(detail, content));
+                          Cu.cloneInto(detail, content));
     content.dispatchEvent(event);
   },
 

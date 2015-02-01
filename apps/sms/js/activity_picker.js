@@ -1,86 +1,99 @@
+/*global ActivityHandler, MozActivity */
+
+(function(exports) {
 'use strict';
 
-/*
-The Activity Picker exposes common activity
-calls used by SMS App
-*/
+function handleActivity(activity, onsuccess, onerror) {
+  // Note: the MozActivity is intentionally constructed in the caller and
+  // passed down to this function in order to make it possible to pass an
+  // inline option to its constructor in the caller for the sake of static
+  // analysis tools.  Please do not change that!
+
+  if (typeof onsuccess === 'function') {
+    activity.onsuccess = onsuccess;
+  }
+
+  activity.onerror = typeof onerror === 'function' ? onerror : function(error) {
+    console.warn('Unhandled error spawning activity; ' + error.message);
+  };
+}
 
 var ActivityPicker = {
-  call:
-   function ap_call(phone) {
-    try {
-      var activity = new MozActivity({
-        name: 'dial',
-        data: {
-          type: 'webtelephony/number',
-          number: phone
-        }
-      });
-    } catch (e) {
-      console.log('WebActivities unavailable? : ' + e);
-    }
+  dial: function ap_call(number, onsuccess, onerror) {
+    handleActivity(new MozActivity({
+      name: 'dial',
+      data: {
+        type: 'webtelephony/number',
+        number: number
+      }
+    }), onsuccess, onerror);
+  },
+  email: function ap_email(email, onsuccess, onerror) {
+    handleActivity(new MozActivity({
+      name: 'new',
+      data: {
+        type: 'mail',
+        URI: 'mailto:' + email
+      }
+    }), onsuccess, onerror);
+  },
+  url: function ap_browse(url, onsuccess, onerror) {
+    handleActivity(new MozActivity({
+      name: 'view',
+      data: {
+        type: 'url',
+        url: url
+      }
+    }), onsuccess, onerror);
   },
   createNewContact:
-   function ap_createNewContact(param,
-     onSuccess, onFailure) {
-     try {
-      var activity = new MozActivity({
-        name: 'new',
-        data: {
-          type: 'webcontacts/contact',
-          params: param
-        }
-      });
-      activity.onsuccess = function ap_contactCreateSuccess() {
-        if (onSuccess && typeof onSuccess === 'function') {
-          onSuccess();
-        }
-      };
-      activity.onerror = function ap_contactCreateFailure() {
-        if (onFailure && typeof onFailure === 'function') {
-          onFailure();
-        }
-      };
-    } catch (e) {
-      console.log('WebActivities unavailable? : ' + e);
-    }
+   function ap_createNewContact(contactProps, onsuccess, onerror) {
+    handleActivity(new MozActivity({
+      name: 'new',
+      data: {
+        type: 'webcontacts/contact',
+        params: contactProps
+      }
+    }), onsuccess, onerror);
   },
   addToExistingContact:
-   function ap_addToExistingContact(param, 
-    onSuccess, onFailure) {
-    try {
-      var activity = new MozActivity({
-        name: 'update',
-        data: {
-          type: 'webcontacts/contact',
-          params: param
-        }
-      });
-      activity.onsuccess = function ap_contactUpdateSuccess() {
-        if (onSuccess && typeof onSuccess === 'function') {
-          onSuccess();
-        }
-      };
-      activity.onerror = function ap_contactUpdateFailure() {
-        if (onFailure && typeof onFailure === 'function') {
-          onFailure();
-        }
-      };
-    } catch (e) {
-        console.log('WebActivities unavailable? : ' + e);
-    }
+   function ap_addToExistingContact(contactProps, onsuccess, onerror) {
+    handleActivity(new MozActivity({
+      name: 'update',
+      data: {
+        type: 'webcontacts/contact',
+        params: contactProps
+      }
+    }), onsuccess, onerror);
   },
-  sendMessage: function ap_sendMessage(phone) {
-    try {
-      var activity = new MozActivity({
-        name: 'new',
-        data: {
-          type: 'websms/sms',
-          number: phone
-        }
-      });
-    } catch (e) {
-      console.log('WebActivities unavailable? : ' + e);
-    }
+  viewContact:
+   function ap_viewContact(contactProps, onsuccess, onerror) {
+    handleActivity(new MozActivity({
+      name: 'open',
+      data: {
+        type: 'webcontacts/contact',
+        params: contactProps
+      }
+    }), onsuccess, onerror);
+  },
+  sendMessage: function ap_sendMessage(number) {
+    // Using ActivityHandler here to navigate to Composer view in the same way
+    // as it's done for real activity.
+    ActivityHandler.toView({
+      number: number
+    });
+  },
+  openSettings: function ap_openSettings(onsuccess, onerror) {
+    handleActivity(new MozActivity({
+      name: 'configure',
+      data: {
+        target: 'device',
+        section: 'messaging'
+      }
+    }), onsuccess, onerror);
   }
 };
+
+exports.ActivityPicker = ActivityPicker;
+
+}(this));

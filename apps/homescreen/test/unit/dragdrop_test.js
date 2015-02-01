@@ -4,19 +4,21 @@ requireApp('homescreen/test/unit/mock_grid_manager.js');
 requireApp('homescreen/test/unit/mock_dock_manager.js');
 
 requireApp('homescreen/test/unit/mock_dragdrop.html.js');
+requireApp('homescreen/test/unit/mock_configurator.js');
 requireApp('homescreen/js/page.js');
 requireApp('homescreen/js/dragdrop.js');
 
 var mocksHelperForDragDrop = new MocksHelper([
   'GridManager',
-  'DockManager'
+  'DockManager',
+  'Configurator'
 ]);
 
 mocksHelperForDragDrop.init();
 
 suite('dragdrop.js >', function() {
 
-  var wrapperNode, page, dock, realElementFromPoint, dragabbleIcon;
+  var wrapperNode, page, dock, realElementFromPoint, dragabbleIcon, clock;
 
   function sendTouchEvent(type, node, coords) {
     var touch = document.createTouch(window, node, 1,
@@ -40,10 +42,15 @@ suite('dragdrop.js >', function() {
   }
 
   // Simulate the movement of an icon
-  function move(node, x, y, elementFromPoint) {
+  function move(node, x, cb, over) {
+    over = over || 'page';
+    var y = getY(over);
+
+    var overPage = y >= 10000 ? dock : page;
+
+    var targetNode = overPage.olist.children[x];
     HTMLDocument.prototype.elementFromPoint = function() {
-      // y >= 10000 -> over the dock
-      return (y >= 10000 ? dock : page).olist.children[x];
+      return targetNode;
     };
 
     var coords = {
@@ -51,43 +58,54 @@ suite('dragdrop.js >', function() {
       y: y
     };
 
+    overPage.container.addEventListener('onpageready', function onReady() {
+      overPage.container.removeEventListener('onpageready', onReady);
+      cb();
+    });
+
     sendTouchEvent('touchmove', node, coords);
     sendMouseEvent('mousemove', node, coords);
-  }
-
-  function doEnd(node, x, y, done) {
-    setTimeout(function() {
-      var coords = {
-        x: x,
-        y: y
-      };
-
-      sendTouchEvent('touchend', node, coords);
-      sendMouseEvent('mouseup', node, coords);
-      setTimeout(done, 0);
-    }, 0);
+    killAsynchrony(targetNode, startOver !== over);
   }
 
   // Simulate when users release the finger
-  function end(node, x, y, done, _overPage) {
-    setTimeout(function() {
-      var overPage = _overPage || page;
-      // The transition has ended when the page is ready
-      if (overPage.ready) {
-        doEnd(node, x, y, done);
-      } else {
-        overPage.container.addEventListener('onpageready', function onReady() {
-          overPage.container.removeEventListener('onpageready', onReady);
-            doEnd(node, x, y, done);
-        });
-      }
-    }, 50);
+  function end(node, x, cb, over) {
+    cb = cb || function() {};
+
+    var coords = {
+      x: x,
+      y: getY(over)
+    };
+
+    window.addEventListener('dragend', function dragend(e) {
+      window.removeEventListener('dragend', dragend);
+      cb();
+    });
+
+    sendTouchEvent('touchend', node, coords);
+    sendMouseEvent('mouseup', node, coords);
   }
 
-  function start(target, x, y) {
+  function getY(over) {
+    return over === 'dock' ? 10000 : 0;
+  }
+
+  // Jumping is true when you go from grid to dock or viceversa.
+  function killAsynchrony(targetNode, jumping) {
+    // Delay between rearranges
+    clock.tick(jumping ? 0 : Page.prototype.REARRANGE_DELAY);
+    // Sending transitionend in order to indicate that icons finished of dancing
+    targetNode.dispatchEvent(new CustomEvent('transitionend'));
+    // Page.setReady method is asynchronous
+    clock.tick();
+  }
+
+  var startOver = null;
+  function start(target, x, over) {
+    startOver = over || 'page';
     var initCoords = {
       x: x,
-      y: y
+      y: getY(over)
     };
 
     var touchstartEvent = {
@@ -106,6 +124,8 @@ suite('dragdrop.js >', function() {
   }
 
   suiteSetup(function() {
+    clock = sinon.useFakeTimers();
+
     realElementFromPoint = HTMLDocument.prototype.elementFromPoint;
 
     mocksHelperForDragDrop.suiteSetup();
@@ -131,6 +151,7 @@ suite('dragdrop.js >', function() {
   suiteTeardown(function() {
     mocksHelperForDragDrop.suiteTeardown();
     document.body.removeChild(wrapperNode);
+    clock.restore();
 
     HTMLDocument.prototype.elementFromPoint = realElementFromPoint;
   });
@@ -149,118 +170,138 @@ suite('dragdrop.js >', function() {
 
   test('Dragging app1 to app2 | Page [app2, app1, app3, app4] ' +
       '| Dock [app5, app6] > ', function(done) {
-    start(dragabbleIcon, 0, 0);
-    move(dragabbleIcon, 1, 0);
-    end(dragabbleIcon, 1, 0, function ended() {
-      checkPositions(page, ['app2', 'app1', 'app3', 'app4']);
-      checkPositions(dock, ['app5', 'app6']);
-      assert.equal(page.getNumIcons(), 4);
-      assert.equal(dock.getNumIcons(), 2);
-      done();
+    start(dragabbleIcon, 0);
+    move(dragabbleIcon, 1, function() {
+      end(dragabbleIcon, 1, function ended() {
+        checkPositions(page, ['app2', 'app1', 'app3', 'app4']);
+        checkPositions(dock, ['app5', 'app6']);
+        assert.equal(page.getNumIcons(), 4);
+        assert.equal(dock.getNumIcons(), 2);
+        done();
+      });
     });
   });
 
   test('Dragging app1 to app3 | Page [app2, app3, app1, app4] ' +
       '| Dock [app5, app6] > ', function(done) {
-    start(dragabbleIcon, 1, 0);
-    move(dragabbleIcon, 2, 0);
-    end(dragabbleIcon, 2, 0, function ended() {
-      checkPositions(page, ['app2', 'app3', 'app1', 'app4']);
-      checkPositions(dock, ['app5', 'app6']);
-      assert.equal(page.getNumIcons(), 4);
-      assert.equal(dock.getNumIcons(), 2);
-      done();
+    start(dragabbleIcon, 1);
+    move(dragabbleIcon, 2, function() {
+      end(dragabbleIcon, 2, function ended() {
+        checkPositions(page, ['app2', 'app3', 'app1', 'app4']);
+        checkPositions(dock, ['app5', 'app6']);
+        assert.equal(page.getNumIcons(), 4);
+        assert.equal(dock.getNumIcons(), 2);
+        done();
+      });
     });
   });
 
   test('Dragging app1 to app4 | Page [app2, app3, app4, app1] ' +
       '| Dock [app5, app6] > ', function(done) {
-    start(dragabbleIcon, 1, 0);
-    move(dragabbleIcon, 3, 0);
-    end(dragabbleIcon, 3, 0, function ended() {
-      checkPositions(page, ['app2', 'app3', 'app4', 'app1']);
-      checkPositions(dock, ['app5', 'app6']);
-      assert.equal(page.getNumIcons(), 4);
-      assert.equal(dock.getNumIcons(), 2);
-      done();
+    start(dragabbleIcon, 2);
+    move(dragabbleIcon, 3, function() {
+      end(dragabbleIcon, 3, function ended() {
+        checkPositions(page, ['app2', 'app3', 'app4', 'app1']);
+        checkPositions(dock, ['app5', 'app6']);
+        assert.equal(page.getNumIcons(), 4);
+        assert.equal(dock.getNumIcons(), 2);
+        done();
+      });
     });
   });
 
   test('Dragging app1 to app2 | Page [app1, app2, app3, app4] ' +
       '| Dock [app5, app6] > ', function(done) {
-    start(dragabbleIcon, 3, 0);
-    move(dragabbleIcon, 0, 0);
-    end(dragabbleIcon, 0, 0, function ended() {
-      checkPositions(page, ['app1', 'app2', 'app3', 'app4']);
-      checkPositions(dock, ['app5', 'app6']);
-      assert.equal(page.getNumIcons(), 4);
-      assert.equal(dock.getNumIcons(), 2);
-      done();
+    start(dragabbleIcon, 3);
+    move(dragabbleIcon, 0, function() {
+      end(dragabbleIcon, 0, function ended() {
+        checkPositions(page, ['app1', 'app2', 'app3', 'app4']);
+        checkPositions(dock, ['app5', 'app6']);
+        assert.equal(page.getNumIcons(), 4);
+        assert.equal(dock.getNumIcons(), 2);
+        done();
+      });
     });
   });
 
-  test('Dragging app1 to dock (from left) | Page [app2, app3, app4] ' +
+  test('Dragging app1 to dock | Page [app2, app3, app4] ' +
       '| Dock [app1, app5, app6] > ', function(done) {
-    start(dragabbleIcon, 0, 0);
-    move(dragabbleIcon, 0, 10000); // y = 10000 -> over the dock
-    end(dragabbleIcon, 0, 10000, function ended() {
-      checkPositions(page, ['app2', 'app3', 'app4']);
-      checkPositions(dock, ['app1', 'app5', 'app6']);
-      assert.equal(page.getNumIcons(), 3);
-      assert.equal(dock.getNumIcons(), 3);
-      done();
-    }, dock);
+    start(dragabbleIcon, 0);
+    move(dragabbleIcon, 0, function() {
+      end(dragabbleIcon, 0, function ended() {
+        checkPositions(page, ['app2', 'app3', 'app4']);
+        checkPositions(dock, ['app1', 'app5', 'app6']);
+        assert.equal(page.getNumIcons(), 3);
+        assert.equal(dock.getNumIcons(), 3);
+        done();
+      }, 'dock');
+    }, 'dock');
+
   });
 
   test('Dragging app1 to app5 | Page [app2, app3, app4] ' +
       '| Dock [app5, app1, app6] > ', function(done) {
-    start(dragabbleIcon, 0, 10000);
-    move(dragabbleIcon, 1, 10000);
-    end(dragabbleIcon, 1, 10000, function ended() {
-      checkPositions(page, ['app2', 'app3', 'app4']);
-      checkPositions(dock, ['app5', 'app1', 'app6']);
-      assert.equal(page.getNumIcons(), 3);
-      assert.equal(dock.getNumIcons(), 3);
-      done();
-    }, dock);
+    start(dragabbleIcon, 1, 'dock');
+    move(dragabbleIcon, 1, function() {
+      end(dragabbleIcon, 1, function ended() {
+        checkPositions(page, ['app2', 'app3', 'app4']);
+        checkPositions(dock, ['app5', 'app1', 'app6']);
+        assert.equal(page.getNumIcons(), 3);
+        assert.equal(dock.getNumIcons(), 3);
+        done();
+      }, 'dock');
+    }, 'dock');
   });
 
   test('Dragging app1 to app6 | Page [app2, app3, app4] ' +
       '| Dock [app5, app6, app1] > ', function(done) {
-    start(dragabbleIcon, 1, 10000);
-    move(dragabbleIcon, 2, 10000);
-    end(dragabbleIcon, 2, 10000, function ended() {
-      checkPositions(page, ['app2', 'app3', 'app4']);
-      checkPositions(dock, ['app5', 'app6', 'app1']);
-      assert.equal(page.getNumIcons(), 3);
-      assert.equal(dock.getNumIcons(), 3);
-      done();
-    }, dock);
+    start(dragabbleIcon, 1, 'dock');
+    move(dragabbleIcon, 2, function() {
+      end(dragabbleIcon, 2, function ended() {
+        checkPositions(page, ['app2', 'app3', 'app4']);
+        checkPositions(dock, ['app5', 'app6', 'app1']);
+        assert.equal(page.getNumIcons(), 3);
+        assert.equal(dock.getNumIcons(), 3);
+        done();
+      }, 'dock');
+    }, 'dock');
   });
 
-  test('Dragging app1 to grid | Page [app2, app3, app4, app1] ' +
+  test('Dragging app1 to grid | Page [app1, app2, app3, app4] ' +
       '| Dock [app5, app6] > ', function(done) {
-    start(dragabbleIcon, 2, 10000);
-    move(dragabbleIcon, 0, 0);
-    end(dragabbleIcon, 0, 0, function ended() {
-      checkPositions(page, ['app1', 'app2', 'app3', 'app4']);
-      checkPositions(dock, ['app5', 'app6']);
-      assert.equal(page.getNumIcons(), 4);
-      assert.equal(dock.getNumIcons(), 2);
-      done();
+    start(dragabbleIcon, 2, 'dock');
+    move(dragabbleIcon, 0, function() {
+      end(dragabbleIcon, 0, function ended() {
+        checkPositions(page, ['app1', 'app2', 'app3', 'app4']);
+        checkPositions(dock, ['app5', 'app6']);
+        assert.equal(page.getNumIcons(), 4);
+        assert.equal(dock.getNumIcons(), 2);
+        done();
+      });
     });
   });
 
-  test('Dragging app1 to app2 | Page [app1, app2, app3, app4] ' +
-      '| Dock [app5, app6] > ', function(done) {
-    start(dragabbleIcon, 3, 0);
-    move(dragabbleIcon, 0, 0);
-    end(dragabbleIcon, 0, 0, function ended() {
-      checkPositions(page, ['app1', 'app2', 'app3', 'app4']);
-      checkPositions(dock, ['app5', 'app6']);
-      assert.equal(page.getNumIcons(), 4);
-      assert.equal(dock.getNumIcons(), 2);
-      done();
+  test('Copy app2 into a collection (first child is a collection) > ',
+       function(done) {
+    dragabbleIcon =
+                document.querySelector('li[data-manifest-u-r-l="http://app2"]');
+    start(dragabbleIcon, 1);
+    move(dragabbleIcon, 0, function() {
+      window.addEventListener('collectiondropapp', function onDrop(e) {
+        window.removeEventListener('collectiondropapp', onDrop);
+
+        assert.equal(e.detail.collection.id, 'http://app1');
+        assert.equal(e.detail.descriptor.manifestURL, 'http://app2');
+
+        checkPositions(page, ['app1', 'app2', 'app3', 'app4']);
+        checkPositions(dock, ['app5', 'app6']);
+        assert.equal(page.getNumIcons(), 4);
+        assert.equal(dock.getNumIcons(), 2);
+        done();
+      });
+
+      end(dragabbleIcon, 0);
     });
   });
+
 });

@@ -1,4 +1,5 @@
 'use strict';
+/* global Format */
 
 //
 // Create a <video> element and  <div> containing a video player UI and
@@ -18,13 +19,15 @@
 // and if the user clicks play again, we resume the video where we left off.
 //
 function VideoPlayer(container) {
-  if (typeof container === 'string')
+  if (typeof container === 'string') {
     container = document.getElementById(container);
+  }
 
   function newelt(parent, type, classes) {
     var e = document.createElement(type);
-    if (classes)
+    if (classes) {
       e.className = classes;
+    }
     parent.appendChild(e);
     return e;
   }
@@ -43,10 +46,14 @@ function VideoPlayer(container) {
   var elapsedBar = newelt(progress, 'div', 'videoPlayerElapsedBar');
   var playHead = newelt(progress, 'div', 'videoPlayerPlayHead');
   var durationText = newelt(slider, 'span', 'videoPlayerDurationText');
+  // expose fullscreen button, so that client can manipulate it directly
+  var fullscreenButton = newelt(slider, 'button',
+                          'videoPlayerFullscreenButton');
 
   this.poster = poster;
   this.player = player;
   this.controls = controls;
+  this.playing = false;
 
   player.preload = 'metadata';
   player.mozAudioChannelType = 'content';
@@ -99,6 +106,10 @@ function VideoPlayer(container) {
   }
 
   function showPlayer() {
+    if (self.onloading) {
+      self.onloading();
+    }
+
     player.style.display = 'block';
     player.src = videourl;
     self.playerShowing = true;
@@ -125,10 +136,12 @@ function VideoPlayer(container) {
 
   function showPoster() {
     poster.style.display = 'block';
-    if (capturedFrame)
+    if (capturedFrame) {
       poster.src = capturedFrame;
-    else
+    }
+    else {
       poster.src = posterurl;
+    }
   }
 
   // Call this when the container size changes
@@ -139,8 +152,10 @@ function VideoPlayer(container) {
 
   this.pause = function pause() {
     // Pause video playback
-    if (self.playerShowing)
+    if (self.playerShowing) {
+      this.playing = false;
       player.pause();
+    }
 
     // Hide the pause button and slider
     footer.classList.add('hidden');
@@ -149,8 +164,9 @@ function VideoPlayer(container) {
     // Show the big central play button
     playbutton.classList.remove('hidden');
 
-    if (this.onpaused)
+    if (this.onpaused) {
       this.onpaused();
+    }
   };
 
   // Set up the playing state
@@ -164,19 +180,30 @@ function VideoPlayer(container) {
       return;
     }
 
-    // Start playing the video
-    player.play();
-
     // Hide the play button
     playbutton.classList.add('hidden');
+    this.playing = true;
+
+    // Start playing the video
+    player.play();
 
     // Show the controls
     footer.classList.remove('hidden');
     controlsHidden = false;
 
-    if (this.onplaying)
+    if (this.onplaying) {
       this.onplaying();
+    }
   };
+
+  fullscreenButton.addEventListener('tap', function(e) {
+    if (self.onfullscreentap) {
+      // If the event propagate to controller, videoplayer will hide
+      // the toolbar, so we stopPropagation here.
+      e.stopPropagation();
+      self.onfullscreentap();
+    }
+  });
 
   // Hook up the play button
   playbutton.addEventListener('tap', function(e) {
@@ -220,15 +247,16 @@ function VideoPlayer(container) {
   player.onended = ended;
 
   function ended() {
-    if (dragging)
+    if (dragging) {
       return;
+    }
     if (endedTimer) {
       clearTimeout(endedTimer);
       endedTimer = null;
     }
     self.pause();
     self.init();
-  };
+  }
 
   // Update the slider and elapsed time as the video plays
   player.ontimeupdate = updateTime;
@@ -241,12 +269,15 @@ function VideoPlayer(container) {
       // We can't update a progress bar if we don't know how long
       // the video is. It is kind of a bug that the <video> element
       // can't figure this out for ogv videos.
-      if (player.duration === Infinity || player.duration === 0)
+      if (player.duration === Infinity || player.duration === 0) {
         return;
+      }
 
       var percent = (player.currentTime / player.duration) * 100 + '%';
+      var startEdge =
+        navigator.mozL10n.language.direction === 'ltr' ? 'left' : 'right';
       elapsedBar.style.width = percent;
-      playHead.style.left = percent;
+      playHead.style[startEdge] = percent;
     }
 
     // Since we don't always get reliable 'ended' events, see if
@@ -256,7 +287,7 @@ function VideoPlayer(container) {
     // a timeout a half a second after we'd expect an ended event.
     if (!endedTimer) {
       if (!dragging && player.currentTime >= player.duration - 1) {
-        var timeUntilEnd = (player.duration - player.currentTime + .5);
+        var timeUntilEnd = (player.duration - player.currentTime + 0.5);
         endedTimer = setTimeout(ended, timeUntilEnd * 1000);
       }
     }
@@ -269,14 +300,15 @@ function VideoPlayer(container) {
 
   // Pause and unload the video if we're hidden so that other apps
   // can use the video decoder hardware.
-  window.addEventListener('mozvisibilitychange', visibilityChanged);
+  window.addEventListener('visibilitychange', visibilityChanged);
 
   function visibilityChanged() {
-    if (document.mozHidden) {
+    if (document.hidden) {
       // If we're just showing the poster image when we're hidden
       // then we don't have to do anything special
-      if (!self.playerShowing)
+      if (!self.playerShowing) {
         return;
+      }
 
       self.pause();
 
@@ -314,8 +346,9 @@ function VideoPlayer(container) {
 
     // Don't do anything if we don't know our size.
     // This could happen if we get a resize event before our metadata loads
-    if (!videowidth || !videoheight)
+    if (!videowidth || !videoheight) {
       return;
+    }
 
     var width, height; // The size the video will appear, after rotation
     switch (rotation) {
@@ -399,8 +432,9 @@ function VideoPlayer(container) {
   slider.addEventListener('pan', function pan(e) {
     e.stopPropagation();
     // We can't do anything if we don't know our duration
-    if (player.duration === Infinity)
+    if (player.duration === Infinity) {
       return;
+    }
 
     if (!dragging) {  // Do this stuff on the first pan event only
       dragging = true;
@@ -413,6 +447,11 @@ function VideoPlayer(container) {
     var rect = backgroundBar.getBoundingClientRect();
     var position = computePosition(e.detail.position, rect);
     var pos = Math.min(Math.max(position, 0), 1);
+    // Handle pos so that slider moves correct way
+    // when user drags it for RTL locales
+    if (navigator.mozL10n.language.direction === 'rtl') {
+      pos = 1 - pos;
+    }
     player.currentTime = player.duration * pos;
     updateTime();
   });
@@ -428,25 +467,29 @@ function VideoPlayer(container) {
   });
 
   function formatTime(time) {
-    function padLeft(num, length) {
-      var r = String(num);
-      while (r.length < length) {
-        r = '0' + r;
-      }
-      return r;
-    }
-
     time = Math.round(time);
     var minutes = Math.floor(time / 60);
     var seconds = time % 60;
     if (minutes < 60) {
-      return padLeft(minutes, 2) + ':' + padLeft(seconds, 2);
+      return Format.padLeft(minutes, 2, '0') + ':' +
+        Format.padLeft(seconds, 2, '0');
     } else {
       var hours = Math.floor(minutes / 60);
       minutes = Math.round(minutes % 60);
-      return hours + ':' + padLeft(minutes, 2) + ':' + padLeft(seconds, 2);
+      return hours + ':' + Format.padLeft(minutes, 2, '0') + ':' +
+        Format.padLeft(seconds, 2, '0');
     }
     return '';
+  }
+
+  // pause the video player if user unplugs headphone
+  var acm = navigator.mozAudioChannelManager;
+  if (acm) {
+    acm.addEventListener('headphoneschange', function onheadphoneschange() {
+      if (!acm.headphones && self.playing) {
+        self.pause();
+      }
+    });
   }
 }
 

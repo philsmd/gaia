@@ -107,28 +107,29 @@
 //
 // TODO:
 //
-// Add profanity to the dictionary and then modify the logic here so we
-// never suggest profanity but never auto-correct it, either.
-//
 // Also have to figure out if something is going wrong with Polish.
 // When I type an unaccented character, I'm not confident that I'm
 // getting predictions that include accented versions of that character.
 //
-// Write tests!
-//
 'use strict';
 
 var Predictions = function() {
-  const cacheSize = 255;    // how many suggestions to remember
+  var CACHE_SIZE = 255;    // how many suggestions to remember
 
   // Weights of various permutations we do when matching input
-  const variantFormMultiplier = .99;          // slightly prefer exact match
-  const punctuationInsertionMultiplier = .95; // apostrophes are almost free
-  const nearbyKeyReplacementMultiplier = 1;   // adjusted by actual distance
-  const transpositionMultiplier = .3;
-  const insertionMultiplier = .3;
-  const substitutionMultiplier = .2;          // for keys that are not nearby
-  const deletionMultiplier = .1;
+  var VARIANT_FORM_MULTIPLIER = .99;           // slightly prefer exact match
+  var PUNCTUATION_INSERTION_MULTIPLIER = .95;  // apostrophes are almost free
+  var NEARBY_KEY_REPLACEMENT_MULTIPLIER = 1;   // adjusted by actual distance
+  var TRANSPOSITION_MULTIPLIER = .3;
+  var INSERTION_MULTIPLIER = .3;
+  var SUBSTITUTION_MULTIPLIER = .2;            // for keys that are not nearby
+  var DELETION_MULTIPLIER = .1;
+  var ZERO_CORRECTION_PREFIX_MULTIPLIER = 10;
+  // profane words don't have a frequency themselves, so we bump their
+  // frequency to a value which will make it pop up (only do if matches input)
+  // 15 is a value that still allows very obvious corrections to be made
+  // see #803189 for more information.
+  var PROFANE_INPUT_MATCH_WEIGHT = 15;
 
   // If we can't find enough exact word matches for the user's input
   // we have to expand some of the candidates we found into complete
@@ -137,13 +138,13 @@ var Predictions = function() {
   // received, but we don't want that as a suggestion if the user just
   // type r. We want things like red and run. So for each extra character
   // we have to add, we multiply the weight by this amount.
-  const wordExtensionMultiplier = 0.4;
+  var WORD_EXTENSION_MULTIPLIER = 0.4;
 
   // How many candidates do we consider before pausing with a setTimeout()?
   // Smaller values make the prediction code more interruptible and
   // possibly result in a more responsive UX. Larger values may reduce the
   // total time required to get predictions
-  const candidatesPerBatch = 10;
+  var CANDIDATES_PER_BATCH = 10;
 
   var tree;                // A typed array of bytes holding the dictionary tree
   var maxWordLength;       // We can reject any input longer than this
@@ -155,8 +156,8 @@ var Predictions = function() {
 
   // This function is called to pass our dictionary to us as an ArrayBuffer.
   function setDictionary(buffer) {
-    cache = new LRUCache(cacheSize); // Start with a new cache
-    var file = Uint8Array(buffer);
+    cache = new LRUCache(CACHE_SIZE); // Start with a new cache
+    var file = new Uint8Array(buffer);
 
     function uint32(offset) {
       return (file[offset] << 24) +
@@ -220,7 +221,7 @@ var Predictions = function() {
       'p': 'ṔṕṖṗꝒꝓƤƥⱣᵽꝐꝑ',
       'q': 'Ꝗꝗ',
       'r': 'ŔŕŘřŖŗṘṙṚṛȐȑȒȓṞṟɌɍⱤɽ',
-      's': 'ŚśŠšŞşŜŝȘșṠṡṢṣß$',
+      's': 'ŚśŠšŞşŜŝȘșṠṡṢṣß',
       't': 'ŤťŢţṰṱȚțȾⱦṪṫṬṭƬƭṮṯƮʈŦŧ',
       'u': 'ÚúŬŭǓǔÛûṶṷÜüṲṳỤụŰűȔȕÙùỦủƯưȖȗŪūŲųŮůŨũṴṵ',
       'v': 'ṾṿƲʋṼṽ',
@@ -286,7 +287,7 @@ var Predictions = function() {
   // about .25 and keys diagonally adjacent to each other have a value of
   // about .16.
   function setNearbyKeys(data) {
-    cache = new LRUCache(cacheSize); // Discard any cached results
+    cache = new LRUCache(CACHE_SIZE); // Discard any cached results
     nearbyKeys = data;
     // log("Nearby Keys: " + JSON.stringify(data));
   }
@@ -373,6 +374,7 @@ var Predictions = function() {
         status.state = 'aborted';
         return true;
       }
+      return false;
     }
 
     function getWords() {
@@ -454,6 +456,30 @@ var Predictions = function() {
     {
       var weight = frequency * multiplier;
 
+      // If no major corrections have been made to this candidate, then
+      // artificially increase its weight so that it appears in the
+      // candidates list before any corrected candidates. This should
+      // ensure that if the user is typing an infrequent word we don't
+      // bump the actual word off the list if there are lots of frequent
+      // words that have similar spellings. The artificial weight does
+      // not carry through to the list of words, so more frequent words may
+      // still be predicted instead of the user's input when the user is
+      // typing an infrequent word. But we shouldn't ever not be able to
+      // find the user's input as a valid word.  Adding letters to the
+      // end of partial input does not count as a correction so we also
+      // test the multiplier so that we don't boost the weight of every
+      // extension. But we do allow one letter to be added on and still
+      // get the extra weight.
+      if (corrections === 0 &&
+          multiplier > WORD_EXTENSION_MULTIPLIER * WORD_EXTENSION_MULTIPLIER) {
+        weight += 100;
+      }
+      // Give it a little boost if corrections are 0 but more than one
+      // character has been added to the input, boost depends on freq
+      else if (corrections === 0) {
+        weight += ((frequency / 32) * ZERO_CORRECTION_PREFIX_MULTIPLIER);
+      }
+
       // If this candidate could never become a word, don't add it
       if (weight <= words.threshold)
         return;
@@ -500,7 +526,7 @@ var Predictions = function() {
         if (aborted())
           return;
 
-        for (var count = 0; count < candidatesPerBatch; count++) {
+        for (var count = 0; count < CANDIDATES_PER_BATCH; count++) {
           var candidate = candidates.remove();
 
           // If there are no more candidates, or if the weight isn't
@@ -595,7 +621,10 @@ var Predictions = function() {
         // the list of candidates, we don't need to continue. None of the
         // nodes that follow in the next pointer linked list will have a
         // higher weight than this one.
-        if (weight <= candidates.threshold)
+        // Note however, that we only use this shortcut if we've already
+        // made at least one correction because uncorrected matches are given
+        // high weight by addCandidate.
+        if (corrections > 0 && weight <= candidates.threshold)
           break;
 
         // If we generate new candidates from this node, this is what
@@ -615,7 +644,17 @@ var Predictions = function() {
         if (remaining.length === 0) {
           // If a word ends here, add it to the queue of words
           if (node.ch === 0) {
-            addWord(output, weight);
+            // Only suggest profane (freq == 1) words if the input is
+            // already the same
+            if (node.freq === 1 &&
+                input.toUpperCase() === output.toUpperCase()) {
+              // Profane words have very low frequency themselves.
+              // To make sure they pop up we bump the frequency
+              addWord(output, PROFANE_INPUT_MATCH_WEIGHT);
+            }
+            else if (node.freq !== 1) {
+              addWord(output, weight);
+            }
             continue;
           }
 
@@ -625,7 +664,7 @@ var Predictions = function() {
           addCandidate(node.center,
                        remaining,  // the empty string
                        newoutput,
-                       multiplier * wordExtensionMultiplier,
+                       multiplier * WORD_EXTENSION_MULTIPLIER,
                        frequency, corrections);
 
           // If there isn't any more input then we don't want to consider
@@ -645,12 +684,11 @@ var Predictions = function() {
             addCandidate(next,    // stay at this same node
                          '',      // no more remaining characters
                          output,  // not newoutput
-                         multiplier * deletionMultiplier,
+                         multiplier * DELETION_MULTIPLIER,
                          frequency, corrections + 1);
           }
           continue;
         }
-
 
         // If we get to here, we know that we're still processing the user's
         // input and that there is a character associated with this node.
@@ -681,7 +719,7 @@ var Predictions = function() {
           addCandidate(node.center,
                        remaining.substring(1),
                        newoutput,
-                       multiplier * variantFormMultiplier,
+                       multiplier * VARIANT_FORM_MULTIPLIER,
                        frequency, corrections);
         }
         else if (corrections < maxCorrections) {
@@ -695,8 +733,8 @@ var Predictions = function() {
           var nearby = nearbyKeys[root] ? nearbyKeys[root][rootcode] : 0;
           if (nearby) {
             var adjust =
-              Math.max(nearby * nearbyKeyReplacementMultiplier,
-                       substitutionMultiplier);
+              Math.max(nearby * NEARBY_KEY_REPLACEMENT_MULTIPLIER,
+                       SUBSTITUTION_MULTIPLIER);
             // If the node holds a character that is near the one the user
             // typed, try it, assuming that the user has fat fingers and
             // just missed the key. Note that we use a weight based on the
@@ -717,7 +755,7 @@ var Predictions = function() {
             addCandidate(node.center,
                          remaining.substring(1),
                          newoutput,
-                         multiplier * substitutionMultiplier,
+                         multiplier * SUBSTITUTION_MULTIPLIER,
                          frequency, corrections + 1);
           }
         }
@@ -739,14 +777,14 @@ var Predictions = function() {
           addCandidate(node.center,
                        remaining, // insertion, so no substring here
                        newoutput,
-                       multiplier * punctuationInsertionMultiplier,
+                       multiplier * PUNCTUATION_INSERTION_MULTIPLIER,
                        frequency, corrections);
         }
         else if (corrections < maxCorrections && output.length > 0) {
           addCandidate(node.center,
                        remaining,
                        newoutput,
-                       multiplier * insertionMultiplier,
+                       multiplier * INSERTION_MULTIPLIER,
                        frequency, corrections + 1);
         }
 
@@ -764,14 +802,14 @@ var Predictions = function() {
           addCandidate(node.center,
                        remaining[0] + remaining.substring(2),
                        newoutput,
-                       multiplier * transpositionMultiplier,
+                       multiplier * TRANSPOSITION_MULTIPLIER,
                        frequency, corrections + 1);
 
           // delete
           addCandidate(node.center,
                        remaining.substring(2),
                        newoutput,
-                       multiplier * deletionMultiplier,
+                       multiplier * DELETION_MULTIPLIER,
                        frequency, corrections + 1);
         }
       }
@@ -794,7 +832,7 @@ var Predictions = function() {
     var haschar = firstbyte & 0x80;
     var bigchar = firstbyte & 0x40;
     var hasnext = firstbyte & 0x20;
-    node.freq = firstbyte & 0x1F;
+    node.freq = (firstbyte & 0x1F) + 1;  // frequencies range from 1 to 32
 
     if (haschar) {
       node.ch = tree[offset++];
@@ -819,6 +857,7 @@ var Predictions = function() {
       node.center = offset;
     else
       node.center = -1;
+
 /*
     log("readNode:" +
         " haschar:" + haschar +

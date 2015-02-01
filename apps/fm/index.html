@@ -1,24 +1,31 @@
 <!DOCTYPE html>
 <html>
   <head>
+    <meta name="viewport" content="width=device-width, user-scalable=no, initial-scale=1">
     <meta charset="utf-8" />
-    <meta http-equiv="pragma" content="no-cache" />
+    <meta name="theme-color" content="#242d33">
     <title>FM Radio</title>
-    <!-- multi-resolution support -->
-    <link rel="stylesheet" href="/shared/style/responsive.css">
     <link rel="stylesheet" href="style/fm.css" type="text/css" />
-    <link rel="resource" type="application/l10n" href="locales/locales.ini" />
+    <meta name="defaultLanguage" content="en-US">
+    <meta name="availableLanguages" content="ar, en-US, fr, zh-TW">
+    <link rel="localization" href="locales/fm.{locale}.properties">
     <script defer src="shared/js/l10n.js"></script>
     <script defer src="shared/js/async_storage.js"></script>
-    <script defer src="shared/js/mouse_event_shim.js"></script>
+    <script defer src="shared/js/airplane_mode_helper.js"></script>
+
+    <!-- For perf-measurement related utilities -->
+    <script defer src="shared/js/usertiming.js"></script>
+    <script defer src="shared/js/performance_testing_helper.js"></script>
+
     <script defer src="js/fm.js"></script>
 
   </head>
 
   <body>
-    <div id="container">
+    <div id="container" dir="ltr">
       <div id="frequency-bar">
         <div id="frequency-display">
+          <a id="speaker-switch" href="#speaker" data-speaker-on="false"></a>
           <a id="bookmark-button" href="#bookmark" data-bookmarked="false"></a>
           <div id="frequency">0</div>
         </div>
@@ -42,7 +49,7 @@
         <div>
           <a id="frequency-op-seekup" href="#seekup"></a>
         </div>
-      </div> 
+      </div>
     </div>
     <div id="antenna-warning" class="warning" hidden>
       <div></div>

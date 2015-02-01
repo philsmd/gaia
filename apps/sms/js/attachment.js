@@ -3,85 +3,105 @@
  * @param {String} uri Location or datauri of image to show.
  * @param {Number} size Size of attachment in bytes.
  * @return {Attachment} new attachment object.
- *
- * The render method creates an iframe to represent the
- * attachment in the message composition area. An iframe
- * is used because Gecko will still try to put the
- * cursor into elements with [contentEditable=false].
- * Instead of a bunch of JavaScript to manage where the
- * caret is and what to delete on backspace, the
- * contentEditable region treats the iframe as a simple
- * block. Win.
- *
- * It uses the main sms.css stylesheet so that styles
- * can be defined in that.
  */
 
-'use strict';
+/*global AttachmentRenderer, MimeMapper, MozActivity, Utils*/
 
-function Attachment(blob, name) {
-  this.blob = blob;
-  this.name = name || '';
-}
+(function(exports) {
+  'use strict';
 
-Attachment.prototype = {
-  get size() {
-    return this.blob.size;
-  },
-  get type() {
-    return Utils.typeFromMimeType(this.blob.type);
-  },
-  handleLoad: function(objectURL, event) {
-    // Signal Gecko to release the reference to the Blob
-    URL.revokeObjectURL(objectURL);
+  // Path to the folder that stores all saved attachments
+  const ATTACHMENT_FOLDER_PATH = 'sms-attachments/';
 
-    // Bubble click events from inside the iframe
-    event.target.contentDocument.addEventListener('click',
-      event.target.click.bind(event.target));
-
-    // Bubble the contextmenu(longpress) as a click
-    event.target.contentDocument.addEventListener('contextmenu',
-      event.target.click.bind(event.target));
-  },
-  render: function() {
-    var el = document.createElement('iframe');
-
-    // The attachment's iFrame requires access to the parent document's context
-    // so that URIs for Blobs created in the parent may resolve as expected.
-    el.setAttribute('sandbox', 'allow-same-origin');
-    el.className = 'attachment';
-    var objectURL = window.URL.createObjectURL(this.blob);
-
-    // When rendering is complete
-    el.addEventListener('load', this.handleLoad.bind(this, objectURL));
-
-    var _ = navigator.mozL10n.get;
-    var src = 'data:text/html,';
-    // We want kilobytes so we divide by 1024, with one fractional digit
-    var size = Math.floor(this.size / 102.4) / 10;
-    var sizeString = _('attachmentSize', {n: size});
-    src += Utils.Template('attachment-tmpl').interpolate({
-      uri: objectURL,
-      size: sizeString
-    });
-    el.src = src;
-
-    return el;
-  },
-
-  view: function() {
-    var activity = new MozActivity({
-      name: 'open',
-      data: {
-        type: this.blob.type,
-        filename: this.name,
-        blob: this.blob
-      }
-    });
-    activity.onerror = function() {
-      var _ = navigator.mozL10n.get;
-      console.error('error with open activity', this.error.name);
-      alert(_('attachmentOpenError'));
-    };
+  /**
+  * Gets actual base file name (name.extension) from its path.
+  */
+  function getBaseName(filePath) {
+    if (!filePath) {
+      throw new Error('Filepath is not defined!');
+    }
+    return filePath.substring(filePath.lastIndexOf('/') + 1);
   }
-};
+
+  function Attachment(blob, options) {
+    options = options || {};
+    this.blob = blob;
+    this.name = blob.name || options.name ||
+      navigator.mozL10n.get('unnamed-attachment');
+    this.isDraft = !!options.isDraft;
+
+    // force the _renderer property to be non enumerable so that we don't try to
+    // store it in IndexedDB
+    Object.defineProperty(this, '_renderer', { writable: true });
+  }
+
+  Attachment.prototype = {
+    /* private methods */
+    _getAttachmentRenderer: function() {
+      this._renderer = this._renderer || AttachmentRenderer.for(this);
+      return this._renderer;
+    },
+
+    /* public properties */
+    get size() {
+      return this.blob.size;
+    },
+
+    get type() {
+      return Utils.typeFromMimeType(this.blob.type);
+    },
+
+    /* public methods */
+    render: function(readyCallback) {
+      var attachmentRenderer = this._getAttachmentRenderer();
+
+      attachmentRenderer.render().catch(function(e) {
+        console.error('Error occurred while rendering attachment.', e);
+      }).then(readyCallback);
+
+      // We still need this for the case where we render a list of attachments
+      // and right order is important.
+      return attachmentRenderer.getAttachmentContainer();
+    },
+
+    updateFileSize: function() {
+      var attachmentRenderer = this._getAttachmentRenderer();
+      attachmentRenderer.updateFileSize();
+    },
+
+    view: function(options) {
+      // Make sure media is openable and savable even if:
+      //   - Blob mimetype is unsupported but file extension is valid.
+      //   - File extenion is missing or invalid but mimetype is supported.
+
+      var mimetype =
+        MimeMapper.guessTypeFromFileProperties(
+          this.name,
+          this.blob.type.toLowerCase()
+        );
+      var filename = MimeMapper.ensureFilenameMatchesType(this.name, mimetype);
+
+      // Override filename, so that every attachment that is saved via "open"
+      // activity will be placed in the single location.
+      filename = ATTACHMENT_FOLDER_PATH + getBaseName(filename);
+
+      var activity = new MozActivity({
+        name: 'open',
+        data: {
+          type: mimetype,
+          filename: filename,
+          blob: this.blob,
+          allowSave: options && options.allowSave
+        }
+      });
+      activity.onerror = function() {
+        console.error('error with open activity', this.error.name);
+        if (this.error.name === 'NO_PROVIDER') {
+          Utils.alert('attachmentOpenError');
+        }
+      };
+    }
+  };
+
+  exports.Attachment = Attachment;
+}(this));

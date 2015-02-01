@@ -1,9 +1,19 @@
-requireLib('oauth_window.js');
-requireLib('provider/abstract.js');
-requireLib('provider/local.js');
+define(function(require) {
+'use strict';
 
-suiteGroup('Views.ModifyAccount', function() {
+var AccountCreation = require('utils/account_creation');
+var AccountModel = require('models/account');
+var Factory = require('test/support/factory');
+var FakePage = require('test/support/fake_page');
+var ModifyAccount = require('views/modify_account');
+var OAuthWindow = require('oauth_window');
+var Presets = require('presets');
+var nextTick = require('next_tick');
 
+require('dom!modify_event');
+require('dom!show_event');
+
+suite('Views.ModifyAccount', function() {
   var subject;
   var account;
   var triggerEvent;
@@ -28,13 +38,13 @@ suiteGroup('Views.ModifyAccount', function() {
   var realMozApps;
   function setupOauth() {
     realMozApps = navigator.mozApps;
-    RealOAuth = Calendar.OAuthWindow;
-    Calendar.OAuthWindow = MockOAuth;
+    RealOAuth = OAuthWindow;
+    OAuthWindow = MockOAuth;
 
     navigator.mozApps = {
       getSelf: function() {
         var req = {};
-        Calendar.nextTick(function() {
+        nextTick(function() {
           if (req.onsuccess) {
             req.onsuccess({
               target: {
@@ -47,12 +57,12 @@ suiteGroup('Views.ModifyAccount', function() {
         return req;
       }
     };
-  };
+  }
 
   function teardownOauth() {
-    Calendar.OAuthWindow = RealOAuth;
+    OAuthWindow = RealOAuth;
     navigator.mozApps = realMozApps;
-  };
+  }
 
   suiteSetup(function() {
     triggerEvent = testSupport.calendar.triggerEvent;
@@ -82,27 +92,29 @@ suiteGroup('Views.ModifyAccount', function() {
     div.id = 'test';
     div.innerHTML = [
       '<div id="modify-account-view">',
+        '<gaia-header id="modify-account-header" action="back">',
+          '<h1>Account</h1>',
+          '<button class="save">Save</button>',
+        '</gaia-header>',
         '<button class="save">save</button>',
         '<button class="cancel">cancel</button>',
         '<button class="delete-cancel">cancel</button>',
         '<section role="status">',
           '<div class="errors"></div>',
         '</section>',
-        '<form>',
+        '<form class="modify-account-form">',
           '<input name="user" />',
           '<input name="password" />',
           '<input name="fullUrl" />',
         '</form>',
+        '<a role="button" class="delete-record">',
         '<button class="delete-confirm">',
         '<a class="force-oauth2"></a>',
       '</div>',
       '<section id="oauth2">',
-        '<header>',
-          '<button class="cancel">',
-            '<a>cancel</a>',
-          '</button>',
-          '<h1 class="toolbar"></h1>',
-        '</header>',
+        '<gaia-header id="oauth-header" action="back">',
+          '<h1 class="oauth-browser-title"> </h1>',
+        '</gaia-header>',
         '<div class="browser-container"></div>',
       '</section>'
     ].join('');
@@ -117,7 +129,7 @@ suiteGroup('Views.ModifyAccount', function() {
     account = Factory('account', { _id: 1 });
 
     // assumes account is in a "modify" state
-    subject = new Calendar.Views.ModifyAccount({
+    subject = new ModifyAccount({
       app: app,
       model: account
     });
@@ -139,16 +151,15 @@ suiteGroup('Views.ModifyAccount', function() {
   });
 
   suite('initialization', function() {
-
     test('when given correct fields', function() {
-      var subject = new Calendar.Views.ModifyAccount({
+      var subject = new ModifyAccount({
         model: account,
         type: 'new'
       });
 
       assert.instanceOf(
         subject.accountHandler,
-        Calendar.Utils.AccountCreation
+        AccountCreation
       );
     });
 
@@ -170,6 +181,10 @@ suiteGroup('Views.ModifyAccount', function() {
     assert.ok(subject.deleteButton);
   });
 
+  test('#deleteRecordButton', function() {
+    assert.ok(subject.deleteRecordButton);
+  });
+
   test('#saveButton', function() {
     assert.ok(subject.saveButton);
   });
@@ -189,7 +204,7 @@ suiteGroup('Views.ModifyAccount', function() {
     setup(function() {
       handler = subject.accountHandler;
       subject.showErrors = function() {
-        showErrorCall = arguments;
+        showErrorCall = Array.slice(arguments);
       };
     });
 
@@ -218,46 +233,79 @@ suiteGroup('Views.ModifyAccount', function() {
   });
 
   suite('#deleteRecord', function() {
-    var calledShow;
-    var calledRemove;
+    var model;
 
     setup(function() {
+      // assign model to simulate
+      // a record that has been dispatched
+      model = Factory('account');
+      model._id = 'myaccount';
+      subject.model = model;
+    });
 
+    test('with existing model', function() {
+      var calledShow;
+      var calledRemove;
       var store = app.store('Account');
+
       // we don't really need to redirect
       // in the test just confirm that it does
       app.router.show = function() {
-        calledShow = arguments;
+        calledShow = Array.slice(arguments);
       };
 
       // again fake model so we do a fake remove
       store.remove = function() {
-        calledRemove = arguments;
+        calledRemove = Array.slice(arguments);
       };
-    });
 
-    test('with existing model', function() {
-      // assign model to simulate
-      // a record that has been dispatched
-      var model = Factory('account');
-      model._id = 'myaccount';
-      subject.model = model;
       subject.render();
-
       triggerEvent(subject.deleteButton, 'click');
 
-      assert.ok(!calledShow, 'did not redirect before-removal');
       assert.ok(calledRemove, 'called remove');
       assert.equal(calledRemove[0], model._id, 'removes right id');
-
-      var removeCb = calledRemove[calledRemove.length - 1];
-
-      removeCb();
 
       assert.deepEqual(
         calledShow,
         ['/advanced-settings/']
       );
+    });
+
+    test('#deleteRecordButton click', function() {
+      this.sinon.stub(subject, 'hideHeaderAndForm');
+
+      subject.render();
+      triggerEvent(subject.deleteRecordButton, 'click');
+      assert.isTrue(subject.hideHeaderAndForm.called);
+    });
+
+    test('#hideHeaderAndForm + #dispatch', function() {
+      assert.isFalse(subject.element.classList.contains(
+        subject.removeDialogClass));
+      subject.hideHeaderAndForm();
+      assert.isTrue(subject.element.classList.contains(
+        subject.removeDialogClass));
+      subject.dispatch({ params: { preset: 'local' } });
+      assert.isFalse(subject.element.classList.contains(
+        subject.removeDialogClass));
+    });
+
+    test('#deleteRecordButton click', function() {
+      this.sinon.stub(subject, 'cancelDelete');
+
+      subject.render();
+      triggerEvent(subject.cancelDeleteButton, 'click');
+      assert.isTrue(subject.cancelDelete.called);
+    });
+
+    test('#cancelDelete', function() {
+      subject.element.classList.add(subject.removeDialogClass);
+      this.sinon.stub(subject, 'cancel');
+
+      subject.cancelDelete();
+      assert.isTrue(subject.cancel.called);
+      assert.isFalse(subject.element.classList.contains(
+        subject.removeDialogClass));
     });
   });
 
@@ -268,7 +316,7 @@ suiteGroup('Views.ModifyAccount', function() {
     setup(function() {
       calledWith = null;
       subject.completeUrl = '/settings';
-      Calendar.Test.FakePage.shown = null;
+      FakePage.shown = null;
 
       subject.accountHandler.send = function() {
         calledWith = arguments;
@@ -282,7 +330,7 @@ suiteGroup('Views.ModifyAccount', function() {
     });
 
     test('with updateModel option', function() {
-      subject.fields['user'].value = 'iupdatedu';
+      subject.fields.user.value = 'iupdatedu';
       subject.save({ updateModel: true });
       assert.equal(subject.model.user, 'iupdatedu');
     });
@@ -295,7 +343,7 @@ suiteGroup('Views.ModifyAccount', function() {
       calledWith[1]();
 
       assert.equal(
-        Calendar.Test.FakePage.shown,
+        FakePage.shown,
         subject.completeUrl,
         'redirects to complete url'
       );
@@ -320,7 +368,7 @@ suiteGroup('Views.ModifyAccount', function() {
       );
 
       assert.notEqual(
-        Calendar.Test.FakePage.shown,
+        FakePage.shown,
         subject.completeUrl,
         'does not redirect on complete'
       );
@@ -335,11 +383,11 @@ suiteGroup('Views.ModifyAccount', function() {
 
     var model = subject._createModel(preset);
 
-    assert.instanceOf(model, Calendar.Models.Account);
+    assert.instanceOf(model, AccountModel);
 
     assert.equal(
       model.providerType,
-      Calendar.Presets.local.providerType
+      Presets.local.providerType
     );
   });
 
@@ -350,8 +398,6 @@ suiteGroup('Views.ModifyAccount', function() {
     account.fullUrl = 'http://google.com/path/';
 
     subject.updateForm();
-
-    var fields = subject.fields;
 
     assert.equal(fieldValue('user'), 'james');
     assert.equal(fieldValue('password'), '');
@@ -378,17 +424,17 @@ suiteGroup('Views.ModifyAccount', function() {
         done(function() {
           assert.instanceOf(
             subject.model,
-            Calendar.Models.Account,
+            AccountModel,
             'creates model'
           );
 
           assert.hasProperties(
             subject.model,
-            Calendar.Presets.local.options,
+            Presets.local.options,
             'uses preset options'
           );
 
-          assert.equal(subject.preset, Calendar.Presets.local);
+          assert.equal(subject.preset, Presets.local);
           assert.equal(subject.completeUrl, '/settings/');
         });
       };
@@ -447,7 +493,6 @@ suiteGroup('Views.ModifyAccount', function() {
       });
 
       test('save button', function(done) {
-        var called;
         subject.fields.user.value = 'updated';
 
         subject.accountHandler.send = function(model) {
@@ -497,7 +542,7 @@ suiteGroup('Views.ModifyAccount', function() {
         clearBrowserData: function() {
           var req = {};
 
-          Calendar.nextTick(function() {
+          nextTick(function() {
             clearsCookies = true;
             req.onsuccess && req.onsuccess();
           });
@@ -514,7 +559,7 @@ suiteGroup('Views.ModifyAccount', function() {
         // Oauth flows are only for new accounts
         subject.model = {};
 
-        subject.preset = Calendar.Presets.google;
+        subject.preset = Presets.google;
         subject.render();
 
         var realFlow = subject._redirectToOAuthFlow;
@@ -561,7 +606,7 @@ suiteGroup('Views.ModifyAccount', function() {
       suiteTeardown(teardownOauth);
 
       setup(function() {
-        subject.preset = Calendar.Presets.google;
+        subject.preset = Presets.google;
         subject.render();
       });
 
@@ -625,7 +670,7 @@ suiteGroup('Views.ModifyAccount', function() {
 
     suite('oauth2 edit flow', function() {
       setup(function() {
-        subject.preset = Calendar.Presets.google;
+        subject.preset = Presets.google;
         subject.model._id = 1;
 
         assert.equal(subject.authenticationType, 'oauth2');
@@ -643,7 +688,6 @@ suiteGroup('Views.ModifyAccount', function() {
     });
 
     suite('submit form', function() {
-
       setup(function() {
         account.user = 'foo';
         subject.fields.password.value = 'foo';
@@ -663,5 +707,6 @@ suiteGroup('Views.ModifyAccount', function() {
 
     });
   });
+});
 
 });

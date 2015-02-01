@@ -1,3 +1,7 @@
+/* global BalanceView, TopUpLayoutView, CostControl, ConfigManager,
+          ViewManager, debug, MozActivity, getTopUpTimeout, LazyLoader,
+          sendBalanceThresholdNotification
+*/
 
 /*
  * The balance tab is in charge of show balance details and allows the use
@@ -8,13 +12,18 @@
  * when the user taps on the update button. Furthermore, the balance update
  * can be triggered by a successful top up request.
  */
+'use strict';
 
 var BalanceTab = (function() {
-  'use strict';
 
   var view, updateButton;
   var topUpUSSD, topUp, topUpDialog, topUpCodeInput, sendCode, countdownSpan;
+  var balanceView, topUpLayoutView;
   var costcontrol, initialized;
+
+  function showTopUpWithCode(evt) {
+    topUpWithCode();
+  }
 
   function setupTab() {
     if (initialized) {
@@ -40,10 +49,19 @@ var BalanceTab = (function() {
       topUpCodeInput = document.getElementById('topup-code-input');
       countdownSpan = document.getElementById('top-up-countdown');
 
+      // Subviews
+      topUpLayoutView = new TopUpLayoutView(topUpUSSD, topUp);
+      var balanceConfig = ConfigManager.configuration.balance;
+      balanceView = new BalanceView(
+        document.getElementById('balance-tab-credit'),
+        document.getElementById('balance-tab-time'),
+        balanceConfig ? balanceConfig.minimum_delay : undefined
+      );
+
       window.addEventListener('localized', localize);
 
       // Configure updates
-      document.addEventListener('mozvisibilitychange', updateWhenVisible);
+      document.addEventListener('visibilitychange', updateWhenVisible);
       updateButton.addEventListener('click', lockAndUpdateUI);
       ConfigManager.observe('lowLimit', toogleLimits, true);
       ConfigManager.observe('lowLimitThreshold', resetNotification, true);
@@ -52,7 +70,7 @@ var BalanceTab = (function() {
 
       // Configure top up
       topUpUSSD.addEventListener('click', topUpWithUSSD);
-      topUp.addEventListener('click', topUpWithCode);
+      topUp.addEventListener('click', showTopUpWithCode);
       topUpCodeInput.addEventListener('input', toogleSend);
       sendCode.addEventListener('click', requestTopUp);
       ConfigManager.observe('waitingForTopUp', onConfirmation, true);
@@ -75,7 +93,7 @@ var BalanceTab = (function() {
       return;
     }
 
-    document.removeEventListener('mozvisibilitychange', updateWhenVisible);
+    document.removeEventListener('visibilitychange', updateWhenVisible);
     updateButton.removeEventListener('click', lockAndUpdateUI);
     ConfigManager.removeObserver('lowLimit', toogleLimits);
     ConfigManager.removeObserver('lowLimitThreshold', resetNotification);
@@ -83,12 +101,13 @@ var BalanceTab = (function() {
     ConfigManager.removeObserver('errors', onBalanceTimeout);
 
     topUpUSSD.removeEventListener('click', topUpWithUSSD);
-    topUp.removeEventListener('click', topUpWithCode);
+    topUp.removeEventListener('click', showTopUpWithCode);
     topUpCodeInput.removeEventListener('input', toogleSend);
     sendCode.removeEventListener('click', requestTopUp);
     ConfigManager.removeObserver('waitingForTopUp', onConfirmation);
     ConfigManager.removeObserver('errors', onTopUpErrors);
 
+    topUpLayoutSet = false;
     initialized = false;
   }
 
@@ -96,7 +115,7 @@ var BalanceTab = (function() {
 
   // On showing the application
   function updateWhenVisible() {
-    if (!document.mozHidden && initialized) {
+    if (!document.hidden && initialized) {
       updateUI();
     } else {
       clearInterval(topUpCountdown);
@@ -113,11 +132,19 @@ var BalanceTab = (function() {
   function toogleLimits(isEnabled, old, key, settings) {
     updateBalance(settings.lastBalance,
                   isEnabled && settings.lowLimitThreshold);
+    if (isEnabled) {
+      sendBalanceThresholdNotification(settings.lastBalance, settings, false);
+      updateBalance(settings.lastBalance, settings.lowLimitThreshold);
+    }
   }
 
   // On changing the threshold for low limit
   function resetNotification() {
     ConfigManager.setOption({ 'lowLimitNotified': false });
+    ConfigManager.requestAll(function _onSettings(configuration, settings) {
+      updateBalance(settings.lastBalance, settings.lowLimitThreshold);
+      sendBalanceThresholdNotification(settings.lastBalance, settings, false);
+    });
   }
 
   // On balance update received
@@ -130,7 +157,7 @@ var BalanceTab = (function() {
 
   // On balance timeout
   function onBalanceTimeout(errors) {
-    if (!errors['BALANCE_TIMEOUT']) {
+    if (!errors.BALANCE_TIMEOUT) {
       return;
     }
     debug('Balance timeout!');
@@ -139,7 +166,7 @@ var BalanceTab = (function() {
     setError('balance_error');
 
     // Error handled, disabling
-    errors['BALANCE_TIMEOUT'] = false;
+    errors.BALANCE_TIMEOUT = false;
     ConfigManager.setOption({errors: errors});
   }
 
@@ -147,7 +174,8 @@ var BalanceTab = (function() {
 
   // On tapping Top Up and Pay
   function topUpWithUSSD() {
-    var dialing = new MozActivity({
+    var dialing;
+    dialing = new MozActivity({
       name: 'dial',
       data: {
         type: 'webtelephony/number',
@@ -220,12 +248,12 @@ var BalanceTab = (function() {
     debug('ERRORS:', errors);
 
     var mode;
-    if (errors['TOPUP_TIMEOUT']) {
-      errors['TOPUP_TIMEOUT'] = false;
+    if (errors.TOPUP_TIMEOUT) {
+      errors.TOPUP_TIMEOUT = false;
       mode = 'topup_timeout';
     }
-    if (errors['INCORRECT_TOPUP_CODE']) {
-      errors['INCORRECT_TOPUP_CODE'] = false;
+    if (errors.INCORRECT_TOPUP_CODE) {
+      errors.INCORRECT_TOPUP_CODE = false;
       mode = 'incorrect_code';
     }
     debug('Most important error: ', mode);
@@ -239,9 +267,14 @@ var BalanceTab = (function() {
   }
 
   // USER INTERFACE
-
+  var topUpLayoutSet = false;
   function updateUI(force) {
-    ConfigManager.requestSettings(function _onSettings(settings) {
+    ConfigManager.requestAll(function _onSettings(configuration, settings) {
+
+      if (!topUpLayoutSet) {
+        topUpLayoutView.setupLayout(configuration.topup);
+        topUpLayoutSet = true;
+      }
 
       resetTopUpCountdown();
       updateBalance(settings.lastBalance,
@@ -253,10 +286,13 @@ var BalanceTab = (function() {
         updateButton.disabled = false;
         var status = result.status;
         var balance = result.data;
-        setBalanceMode(status === 'error' ? 'warning' : 'updating');
-        if (status === 'error') {
+        var isError = status === 'error' && result.details !== 'minimum_delay';
+        var isUpdating = status !== 'error';
+        if (isError) {
+          setBalanceMode('warning');
           setError(result.details);
         } else {
+          setBalanceMode(isUpdating ? 'updating' : 'default');
           setError();
         }
         updateBalance(balance,
@@ -268,30 +304,14 @@ var BalanceTab = (function() {
   // Update the balance in balance view
   function updateBalance(balance, limit) {
 
-    // Balance not available
     if (!balance) {
       debug('Balance not available');
-      document.getElementById('balance-tab-credit')
-        .textContent = _('not-available');
-      document.getElementById('balance-tab-time').innerHTML = '';
+      balanceView.update();
       return;
     }
 
-    // Balance available
-    document.getElementById('balance-tab-credit').textContent =
-      _('currency', {
-        value: balance.balance,
-        currency: ConfigManager.configuration.credit.currency
-      });
-
-    // Timestamp
-    var balanceTabTime = document.getElementById('balance-tab-time');
-    if (view.classList.contains('updating')) {
-      balanceTabTime.textContent = _('updating-ellipsis');
-    } else {
-      balanceTabTime.innerHTML = '';
-      balanceTabTime.appendChild(formatTimeHTML(balance.timestamp));
-    }
+    var isUpdating = view.classList.contains('updating');
+    balanceView.update(balance, isUpdating);
 
     // Limits: reaching zero / low limit
     if (balance.balance === 0) {
@@ -346,21 +366,21 @@ var BalanceTab = (function() {
     var incorrectCodeMessage = document.getElementById('topup-incorrect-code');
 
     isShown = (mode === 'default' || mode === 'topup_timeout');
-    defaultMessage.setAttribute('aria-hidden', !isShown);
+    defaultMessage.hidden = !isShown;
 
     isShown = (mode === 'in_progress');
-    inprogressMessage.setAttribute('aria-hidden', !isShown);
+    inprogressMessage.hidden = !isShown;
 
     isShown = (mode === 'request_fail' || mode === 'no_service');
-    errorMessage.setAttribute('aria-hidden', !isShown);
+    errorMessage.hidden = !isShown;
 
     isShown = (mode === 'incorrect_code');
-    incorrectCodeMessage.setAttribute('aria-hidden', !isShown);
+    incorrectCodeMessage.hidden = !isShown;
 
     // Count down
     var countdownArea = document.getElementById('cost-control-topup-countdown');
     isShown = (mode === 'in_progress');
-    countdownArea.setAttribute('aria-hidden', !isShown);
+    countdownArea.hidden = !isShown;
     if (isShown) {
       resetTopUpCountdown();
     }
@@ -410,22 +430,24 @@ var BalanceTab = (function() {
   // Decide which error should be shown taking in count error priorities
   function setError(error) {
     // Ignore showing message if the message is not registered
-    if (!ERRORS[error]) {
+    if (error && !ERRORS[error]) {
       return;
     }
 
-    debug('Error mode:', error);
+    debug('Error mode:', error ? error : 'no error');
     var messageArea = document.getElementById('cost-control-message-area');
     var message = document.getElementById('error-message-placeholder');
 
     if (!error) {
-      messageArea.setAttribute('aria-hidden', true);
+      messageArea.hidden = true;
+      message.removeAttribute('data-l10n-id');
+      message.textContent = '';
     } else {
-      messageArea.setAttribute('aria-hidden', false);
+      messageArea.hidden = false;
       var curPriority = currentError ? ERRORS[currentError].priority : 0;
       var newPriority = ERRORS[error] ? ERRORS[error].priority : 0;
       if (newPriority >= curPriority) {
-        message.textContent = _(ERRORS[error].string);
+        message.setAttribute('data-l10n-id', ERRORS[error].string);
         currentError = error;
       }
     }
@@ -433,9 +455,14 @@ var BalanceTab = (function() {
 
   return {
     topUpWithCode: topUpWithCode,
-    initialize: setupTab,
+    initialize: function() {
+      var SCRIPTS_NEEDED = [
+        'js/views/TopUpLayoutView.js',
+        'js/views/BalanceView.js'
+      ];
+      LazyLoader.load(SCRIPTS_NEEDED, setupTab);
+    },
     finalize: finalize
   };
 }());
-
 BalanceTab.initialize();

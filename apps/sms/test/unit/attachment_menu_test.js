@@ -1,9 +1,10 @@
+/*global MocksHelper, loadBodyHTML, AttachmentMenu, Attachment */
+
 'use strict';
 
 requireApp('sms/js/attachment_menu.js');
 
 requireApp('sms/test/unit/mock_attachment.js');
-requireApp('sms/test/unit/mock_l10n.js');
 
 var MocksHelperForAttachmentMenu = new MocksHelper([
   'Attachment'
@@ -11,13 +12,6 @@ var MocksHelperForAttachmentMenu = new MocksHelper([
 
 suite('attachment_menu_test.js', function() {
   MocksHelperForAttachmentMenu.attachTestHelpers();
-  suiteSetup(function() {
-    this.realMozL10n = navigator.mozL10n;
-    navigator.mozL10n = MockL10n;
-  });
-  suiteTeardown(function() {
-    navigator.mozL10n = this.realMozL10n;
-  });
 
   setup(function() {
     loadBodyHTML('/index.html');
@@ -25,58 +19,69 @@ suite('attachment_menu_test.js', function() {
 
     this.blob = new Blob(['This is an image message'],
       {type: 'image/jpeg'});
-    this.attachment = new Attachment(
-      this.blob,
-      'Test.jpg');
+    this.attachment = new Attachment(this.blob, {
+      name: 'Test.jpg'
+    });
 
   });
 
   suite('open', function() {
     setup(function() {
-      sinon.stub(AttachmentMenu.el, 'focus');
+      this.sinon.stub(AttachmentMenu.el, 'focus');
 
-      document.querySelector('#attachment-options-menu').className = 'hide';
+      document.querySelector('#attachment-options').className = '';
       // clear out a bunch of fields to make sure open uses localization
-      AttachmentMenu.viewButton.textContent = '';
-      AttachmentMenu.replaceButton.textContent = '';
-      AttachmentMenu.removeButton.textContent = '';
-      AttachmentMenu.cancelButton.textContent = '';
       AttachmentMenu.header.textContent = '';
-
       AttachmentMenu.open(this.attachment);
     });
-    test('removes hide class', function() {
-      assert.isFalse(AttachmentMenu.el.classList.contains('hide'));
+    test('Adds visible class', function() {
+      assert.isTrue(AttachmentMenu.el.classList.contains('visible'));
     });
     test('sets header text', function() {
       assert.equal(AttachmentMenu.header.textContent, this.attachment.name);
     });
-    test('sets view text', function() {
-      assert.equal(AttachmentMenu.viewButton.textContent, 'view-attachment');
-    });
-    test('sets remove text', function() {
-      assert.equal(AttachmentMenu.removeButton.textContent,
-        'remove-attachment{"type":"attachment-type-image"}');
-    });
-    test('sets replace text', function() {
-      assert.equal(AttachmentMenu.replaceButton.textContent,
-        'replace-attachment{"type":"attachment-type-image"}');
-    });
-    test('sets cancel text', function() {
-      assert.equal(AttachmentMenu.cancelButton.textContent, 'cancel');
-    });
     test('calls focus on main element', function() {
       assert.ok(AttachmentMenu.el.focus.called);
+    });
+
+    // generate checks for image, video, audio, and unknown button texts
+    ['image', 'video', 'audio', 'other'].forEach(function(type) {
+      suite(type, function() {
+        setup(function() {
+          this.blob = new Blob(['test'],
+            { type: type + '/whatever' });
+          this.attachment = new Attachment(this.blob, { name: type });
+          AttachmentMenu.open(this.attachment);
+        });
+        test('sets view text', function() {
+          assert.equal(
+            AttachmentMenu.viewButton.getAttribute('data-l10n-id'),
+            'view-attachment-' + type
+          );
+        });
+        test('sets remove text', function() {
+          assert.equal(
+            AttachmentMenu.removeButton.getAttribute('data-l10n-id'),
+            'remove-attachment-' + type
+          );
+        });
+        test('sets replace text', function() {
+          assert.equal(
+            AttachmentMenu.replaceButton.getAttribute('data-l10n-id'),
+            'replace-attachment-' + type
+          );
+        });
+      });
     });
   });
 
   test('close', function() {
     AttachmentMenu.open(this.attachment);
-    assert.equal(document.querySelector('#attachment-options-menu').className,
-      '');
+    assert.equal(document.querySelector('#attachment-options').className,
+      'visible');
     AttachmentMenu.close();
-    assert.equal(document.querySelector('#attachment-options-menu').className,
-      'hide');
+    assert.equal(document.querySelector('#attachment-options').className,
+      '');
   });
 
 });

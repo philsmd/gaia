@@ -1,8 +1,11 @@
-requireLib('timespan.js');
-requireLib('calc.js');
-requireLib('event_mutations.js');
+define(function(require) {
+'use strict';
 
-suite('event_mutations', function() {
+var Calc = require('calc');
+var EventMutations = require('event_mutations');
+var Factory = require('test/support/factory');
+
+suite('EventMutations', function() {
   var subject;
   var app;
   var db;
@@ -13,14 +16,18 @@ suite('event_mutations', function() {
   var busytimeStore;
   var alarmStore;
   var componentStore;
+  var shouldDisplay;
 
   setup(function(done) {
-    this.timeout(5000);
-
-    subject = Calendar.EventMutations;
+    subject = EventMutations;
     app = testSupport.calendar.app();
+    subject.app = app;
     db = app.db;
     controller = app.timeController;
+    shouldDisplay = controller._shouldDisplayBusytime;
+    controller._shouldDisplayBusytime = function() {
+      return true;
+    };
 
     eventStore = db.getStore('Event');
     busytimeStore = db.getStore('Busytime');
@@ -31,6 +38,7 @@ suite('event_mutations', function() {
   });
 
   teardown(function(done) {
+    controller._shouldDisplayBusytime = shouldDisplay;
     testSupport.calendar.clearStore(
       db,
       [
@@ -46,37 +54,11 @@ suite('event_mutations', function() {
     );
   });
 
-  var addTime;
-  var addEvent;
-  var removeTime;
-
-  setup(function() {
-    addTime = null;
-    addEvent = null;
-    removeTime = null;
-
-    var span = new Calendar.Timespan(
-      0, Infinity
-    );
-
-    controller.observe();
-    controller.observeTime(span, function(e) {
-      switch (e.type) {
-        case 'add':
-          addTime = e.data;
-          addEvent = controller._eventsCache[addTime.eventId];
-          break;
-        case 'remove':
-          removeTime = e.data;
-          break;
-      }
-    });
-  });
-
   suite('#create', function() {
 
     var event;
     var component;
+    var mutation;
 
     setup(function(done) {
       event = Factory('event');
@@ -85,29 +67,21 @@ suite('event_mutations', function() {
       });
 
       // Set the event to start and end in the past
-      event.remote.start = Calendar.Calc.dateToTransport(
+      event.remote.start = Calc.dateToTransport(
         new Date(Date.now() - 2 * 60 * 60 * 1000)
       );
 
       // Ending one hour in the future
-      event.remote.end = Calendar.Calc.dateToTransport(
+      event.remote.end = Calc.dateToTransport(
         new Date(Date.now() - 1 * 60 * 60 * 1000)
       );
 
-      var mutation = subject.create({
+      mutation = subject.create({
         event: event,
         icalComponent: component
       });
 
       mutation.commit(done);
-
-      // verify that we sent to controller
-      assert.ok(addEvent, 'sent controller event');
-      assert.ok(addTime, 'sent controller time');
-
-      // check we sent the right event over.
-      assert.hasProperties(addEvent, event, 'controller event');
-      assert.equal(addTime.eventId, event._id, 'controller time');
     });
 
     test('event', function(done) {
@@ -119,14 +93,14 @@ suite('event_mutations', function() {
     });
 
     test('busytime', function(done) {
-      var expectedBusytime = busytimeStore.factory(
-        event
-      );
+      var busytime = mutation.busytime;
+      assert.ok(busytime._id, 'has _id');
 
-      busytimeStore.get(expectedBusytime._id, function(err, value) {
+      busytimeStore.get(busytime._id, function(err, value) {
         done(function() {
           assert.hasProperties(value, {
             eventId: event._id,
+            calendarId: event.calendarId,
             start: event.remote.start,
             end: event.remote.end
           });
@@ -135,12 +109,8 @@ suite('event_mutations', function() {
     });
 
     test('alarms', function(done) {
-      var expectedBusytime = busytimeStore.factory(
-        event
-      );
-
       var expectedAlarms = [];
-      var busyId = expectedBusytime._id;
+      var busyId = mutation.busytime._id;
 
       alarmStore.findAllByBusytimeId(busyId, function(err, values) {
         done(function() {
@@ -177,16 +147,17 @@ suite('event_mutations', function() {
       create.commit(done);
     });
 
+    var mutation;
     setup(function(done) {
       event.remote.foo = true;
 
       // Starting one hour in the past
-      event.remote.start = Calendar.Calc.dateToTransport(
+      event.remote.start = Calc.dateToTransport(
         new Date(Date.now() - 1 * 60 * 60 * 1000)
       );
 
       // Ending one hour in the future
-      event.remote.end = Calendar.Calc.dateToTransport(
+      event.remote.end = Calc.dateToTransport(
         new Date(Date.now() + 1 * 60 * 60 * 1000)
       );
 
@@ -202,26 +173,12 @@ suite('event_mutations', function() {
 
       component.data = { changed: true };
 
-      var update = subject.update({
+      mutation = subject.update({
         event: event,
         icalComponent: component
       });
 
-      addTime = addEvent = removeTime = null;
-      update.commit(done);
-    });
-
-    test('controller events', function() {
-      // verify we sent the controller stuff before
-      // fully sending to the db.
-      assert.ok(addTime, 'controller time');
-      assert.ok(addEvent, 'controller event');
-      assert.ok(removeTime, 'controller removed time');
-
-      assert.hasProperties(addTime, {
-        start: event.remote.start,
-        end: event.remote.end
-      });
+      mutation.commit(done);
     });
 
     test('event', function(done) {
@@ -239,11 +196,7 @@ suite('event_mutations', function() {
     });
 
     test('busytime', function(done) {
-      var expectedBusytime = busytimeStore.factory(
-        event
-      );
-
-      busytimeStore.get(expectedBusytime._id, function(err, value) {
+      busytimeStore.get(mutation.busytime._id, function(err, value) {
         done(function() {
           assert.hasProperties(value, {
             eventId: event._id,
@@ -255,19 +208,15 @@ suite('event_mutations', function() {
     });
 
     test('alarms', function(done) {
-      var expectedBusytime = busytimeStore.factory(
-        event
-      );
-
       var expectedAlarms = event.remote.alarms;
-      var busyId = expectedBusytime._id;
+      var busyId = mutation.busytime._id;
 
       alarmStore.findAllByBusytimeId(busyId, function(err, values) {
         done(function() {
           assert.equal(values.length, expectedAlarms.length);
-          for (var i = 0, alarm; alarm = expectedAlarms[i]; i++) {
+          for (var i = 0; i < expectedAlarms.length; i++) {
             assert.equal(
-              event.remote.start.utc + alarm.trigger * 1000,
+              event.remote.start.utc + expectedAlarms[i].trigger * 1000,
               values[i].trigger.utc
             );
           }
@@ -283,5 +232,6 @@ suite('event_mutations', function() {
       });
     });
   });
+});
 
 });

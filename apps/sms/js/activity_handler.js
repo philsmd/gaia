@@ -1,14 +1,45 @@
 /* -*- Mode: js; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- /
 /* vim: set shiftwidth=2 tabstop=2 autoindent cindent expandtab: */
 
+/*global Utils, MessageManager, Compose, OptionMenu, NotificationHelper,
+         Attachment, Notify, SilentSms, Threads, SMIL, Contacts,
+         ThreadUI, Notification, Settings, Navigation */
+/*exported ActivityHandler */
+
 'use strict';
 
-var ActivityHandler = {
-  init: function() {
-    window.navigator.mozSetMessageHandler('activity', this.global.bind(this));
+/**
+ * Describes available data types that can be associated with the activities.
+ * @enum {string}
+ */
+const ActivityDataType = {
+  IMAGE: 'image/*',
+  AUDIO: 'audio/*',
+  VIDEO: 'video/*',
+  URL: 'url',
+  VCARD: 'text/vcard'
+};
 
-    // We want to register the handler only when we're on the launch path
-    if (!window.location.hash.length) {
+var ActivityHandler = {
+  // Will hold current activity object
+  _activity: null,
+
+  init: function() {
+    if (!window.navigator.mozSetMessageHandler) {
+      return;
+    }
+
+    // A mapping of MozActivity names to their associated event handler
+    window.navigator.mozSetMessageHandler('activity',
+      this._onActivity.bind(this, {
+        'new': this._onNewActivity,
+        'share': this._onShareActivity
+      })
+    );
+
+    // We don't want to register these system handlers when app is run as
+    // inline activity
+    if (!Navigation.getPanelName().startsWith('activity')) {
       window.navigator.mozSetMessageHandler('sms-received',
         this.onSmsReceived.bind(this));
 
@@ -17,79 +48,179 @@ var ActivityHandler = {
     }
   },
 
+  isInActivity: function isInActivity() {
+    return !!this._activity;
+  },
+
+  setActivity: function setActivity(value) {
+    if (!value) {
+      throw new Error('Activity should be defined!');
+    }
+    this._activity = value;
+  },
+
   // The Messaging application's global Activity handler. Delegates to specific
   // handler based on the Activity name.
-  global: function activityHandler(activity) {
+  _onActivity: function activityHandler(handlers, activity) {
     var name = activity.source.name;
-    var handler = this._handlers[name];
+    var handler = handlers[name];
 
     if (typeof handler === 'function') {
-      handler.apply(this, arguments);
+      this.setActivity(activity);
+
+      handler.call(this, activity);
     } else {
       console.error('Unrecognized activity: "' + name + '"');
     }
   },
 
-  // A mapping of MozActivity names to their associated event handler
-  _handlers: {
-    'new': function newHandler(activity) {
+  /**
+  * Finds a contact from a number or email address.
+  * Returns a promise that resolve with a contact
+  * or is rejected if not found
+  * @returns Promise that resolve to a
+  * {number: String, name: String, source: 'contacts'}
+  */
+  _findContactByTarget: function findContactByTarget(target) {
+    var deferred = Utils.Promise.defer();
+    Contacts.findByAddress(target, (results) => {
+      var record, name, contact;
 
-      // XXX This lock is about https://github.com/mozilla-b2g/gaia/issues/5405
-      if (MessageManager.activity.isLocked) {
+      // Bug 867948: results null is a legitimate case
+      if (results && results.length) {
+        record = results[0];
+        name = record.name.length && record.name[0];
+        contact = {
+          number: target,
+          name: name,
+          source: 'contacts'
+        };
+
+        deferred.resolve(contact);
         return;
       }
+      deferred.reject(new Error('No contact found with target: ' + target));
+      return;
 
-      MessageManager.activity.isLocked = true;
+    });
 
-      var number = activity.source.data.number;
-      var body = activity.source.data.body;
+    return deferred.promise;
+  },
 
-      Contacts.findByPhoneNumber(number, function findContact(results) {
-        var record, details, name, contact;
+  _onNewActivity: function newHandler(activity) {
+    var viewInfo = {
+      body: activity.source.data.body,
+      number: activity.source.data.target || activity.source.data.number,
+      contact: null,
+      threadId: null
+    };
 
-        // Bug 867948: results null is a legitimate case
-        if (results && results.length) {
-          record = results[0];
-          details = Utils.getContactDetails(number, record);
-          name = record.name.length && record.name[0];
-          contact = {
-            number: number,
-            name: name,
-            source: 'contacts'
-          };
+    var focusComposer = false;
+    var threadPromise;
+    if (viewInfo.number) {
+      // It's reasonable to focus on composer if we already have some phone
+      // number or even contact to fill recipients input
+      focusComposer = true;
+      // try to get a thread from number
+      // if no thread, promise is rejected and we try to find a contact
+      threadPromise = MessageManager.findThreadFromNumber(viewInfo.number).then(
+        function onResolve(threadId) {
+          viewInfo.threadId = threadId;
+        },
+        function onReject() {
+          return ActivityHandler._findContactByTarget(viewInfo.number)
+            .then((contact) => viewInfo.contact = contact);
+        }
+      )
+      // case no contact and no thread id: gobble the error
+      .catch(() => {});
+    }
+
+    return (threadPromise || Promise.resolve()).then(
+      () => this.toView(viewInfo, focusComposer)
+    );
+  },
+
+  _onShareActivity: function shareHandler(activity) {
+    var activityData = activity.source.data,
+        dataToShare = null;
+
+    switch(activityData.type) {
+      case ActivityDataType.AUDIO:
+      case ActivityDataType.VIDEO:
+      case ActivityDataType.IMAGE:
+        var attachments = activityData.blobs.map(function(blob, idx) {
+          var attachment = new Attachment(blob, {
+            name: activityData.filenames[idx],
+            isDraft: true
+          });
+
+          return attachment;
+        });
+
+        var size = attachments.reduce(function(size, attachment) {
+          if (attachment.type !== 'img') {
+            size += attachment.size;
+          }
+
+          return size;
+        }, 0);
+
+        if (size > Settings.mmsSizeLimitation) {
+          Utils.alert({
+            id: 'attached-files-too-large',
+            args: {
+              n: activityData.blobs.length,
+              mmsSize: (Settings.mmsSizeLimitation / 1024).toFixed(0)
+            }
+          }).then(() => this.leaveActivity());
+          return;
         }
 
-        ActivityHandler.toView({
-          body: body,
-          number: number,
-          contact: contact || null
+        dataToShare = attachments;
+        break;
+      case ActivityDataType.URL:
+        dataToShare = activityData.url;
+        break;
+      // As for the moment we only allow to share one vcard we treat this case
+      // in an specific block
+      case ActivityDataType.VCARD:
+        dataToShare = new Attachment(activityData.blobs[0], {
+          name: activityData.filenames[0],
+          isDraft: true
         });
-      });
-    },
-    share: function shareHandler(activity) {
-      var blobs = activity.source.data.blobs,
-        names = activity.source.data.filenames;
+        break;
+      default:
+        this.leaveActivity(
+          'Unsupported activity data type: ' + activityData.type
+        );
+        return;
+    }
 
-      function insertAttachments() {
-        window.removeEventListener('hashchange', insertAttachments);
+    if (!dataToShare) {
+      this.leaveActivity('No data to share found!');
+      return;
+    }
 
-        blobs.forEach(function(blob, idx) {
-          var name = names[idx];
-          var attachment = new Attachment(blob, name);
-          Compose.append(attachment);
-        });
-      }
+    Navigation.toPanel('composer').then(
+      Compose.append.bind(Compose, dataToShare)
+    );
+  },
 
-      // Navigating to the 'New Message' page is an asynchronous operation that
-      // clears the Composition field. If the application is not already in the
-      // 'New Message' page, delay attachment insertion until after the
-      // navigation is complete.
-      if (window.location.hash !== '#new') {
-        window.addEventListener('hashchange', insertAttachments);
-        window.location.hash = '#new';
+  /**
+   * Leaves current activity and toggles request activity mode.
+   * @param {string?} errorReason String message that indicates that something
+   * went wrong and we'd like to call postError with the specified reason
+   * instead of successful postResult.
+   */
+  leaveActivity: function ah_leaveActivity(errorReason) {
+    if (this.isInActivity()) {
+      if (errorReason) {
+        this._activity.postError(errorReason);
       } else {
-        insertAttachments();
+        this._activity.postResult({ success: true });
       }
+      this._activity = null;
     }
   },
 
@@ -100,117 +231,122 @@ var ActivityHandler = {
       return;
     }
 
-    // For "new" message activities, proceed directly to
-    // new message composition view.
-    if (!message.threadId && message.number) {
-      ActivityHandler.toView(message);
-      return;
-    }
+    MessageManager.getMessage(message.id).then((message) => {
+      if (!Threads.has(message.threadId)) {
+        Threads.registerMessage(message);
+      }
 
-    var request = navigator.mozMobileMessage.getMessage(message.id);
+      if (Compose.isEmpty()) {
+        ActivityHandler.toView(message);
+        return;
+      }
 
-    request.onsuccess = function onsuccess() {
-      ActivityHandler.toView(message);
-    };
-
-    request.onerror = function onerror() {
-      alert(navigator.mozL10n.get('deleted-sms'));
-    };
+      Utils.confirm('discard-new-message').then(() => {
+        ThreadUI.cleanFields();
+        ActivityHandler.toView(message);
+      });
+    }, function onGetMessageError() {
+      Utils.alert('deleted-sms');
+    });
   },
 
-  // Deliver the user to the correct view
-  // based on the params provided in the
-  // "message" object.
-  //
-  toView: function ah_toView(message) {
-    /**
-     *  "message" is either a message object that belongs
-     *  to a thread, or a message object from the system.
-     *
-     *
-     *  message {
-     *    number: A string phone number to pre-populate
-     *            the recipients list with.
-     *
-     *    body: An optional body to preset the compose
-     *           input with.
-     *
-     *    contact: An optional "contact" object
-     *
-     *    threadId: An option threadId corresponding
-     *              to a new or existing thread.
-     *
-     *  }
-     */
+  // The unsent confirmation dialog provides 2 options: edit and discard
+  // discard: clear the message user typed
+  // edit: continue to edit the unsent message and ignore the activity
+  displayUnsentConfirmation: function ah_displayUnsentConfirmtion(activity) {
+    var msgDiv = document.createElement('div');
+    msgDiv.innerHTML = '<h1 data-l10n-id="unsent-message-title"></h1>' +
+                       '<p data-l10n-id="unsent-message-description"></p>';
+    var options = new OptionMenu({
+      type: 'confirm',
+      section: msgDiv,
+      items: [{
+        l10nId: 'unsent-message-option-edit',
+        method: function editOptionMethod() {
+          // we're already in message app, we don't need to do anything
+        }
+      },
+      {
+        l10nId: 'unsent-message-option-discard',
+        method: (activity) => {
+          ThreadUI.discardDraft();
+          this.launchComposer(activity);
+        },
+        params: [activity]
+      }]
+    });
+    options.show();
+  },
 
-    if (!message) {
-      return;
+  // Launch the UI properly
+  launchComposer: function ah_launchComposer(activity) {
+    Navigation.toPanel('composer', { activity: activity });
+  },
+
+  // Check if we want to go directly to the composer or if we
+  // want to keep the previously typed text
+  triggerNewMessage: function ah_triggerNewMessage(body, number, contact) {
+     var activity = {
+        body: body || null,
+        number: number || null,
+        contact: contact || null
+      };
+
+    if (Compose.isEmpty()) {
+      this.launchComposer(activity);
+    } else {
+      // ask user how should we do
+      ActivityHandler.displayUnsentConfirmation(activity);
     }
+  },
 
-    var threadId = message.threadId ? message.threadId : null;
-    var body = message.body ? Utils.escapeHTML(message.body) : '';
-    var number = message.number ? message.number : '';
-    var contact = message.contact ? message.contact : null;
-    var threadHash = '#thread=' + threadId;
-
-    var showAction = function act_action() {
+  /**
+   * Delivers the user to the correct view based on the params provided in the
+   * "message" parameter.
+   * @param {{number: string, body: string, contact: MozContact,
+   * threadId: number}} message It's either a message object that belongs to a
+   * thread, or a message object from the system. "number" is a string phone
+   * number to pre-populate the recipients list with, "body" is an optional body
+   * to preset the compose input with, "contact" is an optional MozContact
+   * instance, "threadId" is an optional threadId corresponding to a new or
+   * existing thread.
+   * @param {Boolean} focusComposer Indicates whether we need to focus composer
+   * when we navigate to Thread panel.
+   */
+  toView: function ah_toView(message, focusComposer) {
+    var navigateToView = function act_navigateToView() {
       // If we only have a body, just trigger a new message.
-      if (!threadId) {
-        MessageManager.activity.body = body || null;
-        MessageManager.activity.number = number || null;
-        MessageManager.activity.contact = contact || null;
-
-        // Move to new message
-        window.location.hash = '#new';
+      if (!message.threadId) {
+        ActivityHandler.triggerNewMessage(
+          message.body, message.number, message.contact
+        );
         return;
       }
-      var locationHash = window.location.hash;
 
-      switch (locationHash) {
-        case '#thread-list':
-        case '#new':
-          window.location.hash = threadHash;
-          MessageManager.activity.isLocked = false;
-          break;
-        default:
-          if (locationHash.indexOf('#thread=') !== -1) {
-            // Don't switch back to thread list if we're
-            // already displaying the requested threadId.
-            if (locationHash === threadHash) {
-              MessageManager.activity.isLocked = false;
-            } else {
-              MessageManager.activity.threadId = threadId;
-              window.location.hash = '#thread-list';
-            }
-          } else {
-            window.location.hash = threadHash;
-            MessageManager.activity.isLocked = false;
-          }
-          break;
-      }
+      Navigation.toPanel(
+        'thread', { id: message.threadId, focusComposer: focusComposer }
+      );
     };
 
-    if (!document.documentElement.lang) {
-      navigator.mozL10n.ready(function waitLocalized() {
-        showAction();
-      });
-    } else {
-      if (!document.mozHidden) {
+    navigator.mozL10n.once(function waitLocalized() {
+      if (!document.hidden) {
         // Case of calling from Notification
-        showAction();
+        navigateToView();
         return;
       }
-      document.addEventListener('mozvisibilitychange',
-        function waitVisibility() {
-          document.removeEventListener('mozvisibilitychange', waitVisibility);
-          showAction();
+
+      document.addEventListener('visibilitychange', function waitVisibility() {
+        document.removeEventListener('visibilitychange', waitVisibility);
+        navigateToView();
       });
-    }
+    });
   },
 
   /* === Incoming SMS support === */
 
   onSmsReceived: function ah_onSmsReceived(message) {
+    var _ = navigator.mozL10n.get;
+
     // Acquire the cpu wake lock when we receive an SMS.  This raises the
     // priority of this process above vanilla background apps, making it less
     // likely to be killed on OOM.  It also prevents the device from going to
@@ -234,8 +370,6 @@ var ActivityHandler = {
     }
     timeoutID = setTimeout(releaseWakeLock, 30 * 1000);
 
-    // The black list includes numbers for which notifications should not
-    // progress to the user. Se blackllist.js for more information.
     var number = message.sender;
     var threadId = message.threadId;
     var id = message.id;
@@ -248,30 +382,25 @@ var ActivityHandler = {
       // See: https://bugzilla.mozilla.org/show_bug.cgi?id=782211
       navigator.mozApps.getSelf().onsuccess = function(event) {
         var app = event.target.result;
-        var iconURL = NotificationHelper.getIconURI(app);
-
-        // XXX: Add params to Icon URL.
-        iconURL += '?type=class0';
 
         // We have to remove the SMS due to it does not have to be shown.
-        MessageManager.deleteMessage(message.id, function() {
+        MessageManager.deleteMessages(message.id, function() {
           app.launch();
-          alert(number + '\n' + message.body);
+          Notify.ringtone();
+          Notify.vibrate();
+          Utils.alert({ raw: message.body || '' }, { raw: number });
           releaseWakeLock();
         });
       };
       return;
     }
-    if (BlackList.has(message.sender)) {
-      releaseWakeLock();
-      return;
-    }
 
     function dispatchNotification(needManualRetrieve) {
       // The SMS app is already displayed
-      if (!document.mozHidden) {
-        if (threadId === Threads.currentId) {
-          navigator.vibrate([200, 200, 200]);
+      if (!document.hidden) {
+        if (Navigation.isCurrentPanel('thread', { id: threadId })) {
+          Notify.ringtone();
+          Notify.vibrate();
           releaseWakeLock();
           return;
         }
@@ -290,10 +419,41 @@ var ActivityHandler = {
           'id=' + id
         ].join('&');
 
-        var goToMessage = function goToMessage() {
+        function goToMessage() {
           app.launch();
           ActivityHandler.handleMessageNotification(message);
-        };
+        }
+
+        function continueWithNotification(sender, body) {
+          var title = sender;
+          if (Settings.hasSeveralSim() && message.iccId) {
+            var simName = Settings.getSimNameByIccId(message.iccId);
+            title = _(
+              'dsds-notification-title-with-sim',
+              { sim: simName, sender: sender }
+            );
+          }
+
+          var options = {
+            icon: iconURL,
+            body: body,
+            tag: 'threadId:' + threadId
+          };
+
+          var notification = new Notification(title, options);
+          notification.addEventListener('click', goToMessage);
+          releaseWakeLock();
+
+          // Close notification if we are already in thread view and view become
+          // visible.
+          if (document.hidden && threadId === Threads.currentId) {
+            document.addEventListener('visibilitychange',
+              function onVisible() {
+                document.removeEventListener('visibilitychange', onVisible);
+                notification.close();
+            });
+          }
+        }
 
         function getTitleFromMms(callback) {
           // If message is not downloaded notification, we need to apply
@@ -304,7 +464,7 @@ var ActivityHandler = {
           // 'mms message' in the field.
           if (needManualRetrieve) {
             setTimeout(function notDownloadedCb() {
-              callback(navigator.mozL10n.get('notDownloaded-title'));
+              callback(_('notDownloaded-title'));
             });
           }
           else if (message.subject) {
@@ -315,58 +475,65 @@ var ActivityHandler = {
             SMIL.parse(message, function slideCb(slideArray) {
               var text, slidesLength = slideArray.length;
               for (var i = 0; i < slidesLength; i++) {
-                if (!slideArray[i].text)
+                if (!slideArray[i].text) {
                   continue;
+                }
 
                 text = slideArray[i].text;
                 break;
               }
-              text = text ? text : navigator.mozL10n.get('mms-message');
+              text = text ? text : _('mms-message');
               callback(text);
             });
           }
         }
 
-        Contacts.findByPhoneNumber(message.sender, function gotContact(
-                                                                contact) {
+        Contacts.findByAddress(message.sender, function gotContact(contact) {
           var sender = message.sender;
           if (!contact) {
             console.error('We got a null contact for sender:', sender);
-          } else if (contact.length && contact[0].name) {
-            sender = Utils.escapeHTML(contact[0].name[0]);
+          } else if (contact.length && contact[0].name &&
+            contact[0].name.length && contact[0].name[0]) {
+            sender = contact[0].name[0];
           }
-
           if (message.type === 'sms') {
-            NotificationHelper.send(sender, message.body, iconURL,
-                                                          goToMessage);
-            releaseWakeLock();
+            continueWithNotification(sender, message.body || '');
           } else { // mms
             getTitleFromMms(function textCallback(text) {
-              NotificationHelper.send(sender, text, iconURL, goToMessage);
-              releaseWakeLock();
+              continueWithNotification(sender, text);
             });
           }
         });
       };
     }
-    // If message type is mms and pending on server, ignore the notification
-    // because it will be retrieved from server automatically. Handle other
-    // manual/error status as manual download and dispatch notification.
-    // Please ref mxr for all the possible delivery status:
-    // http://mxr.mozilla.org/mozilla-central/source/dom/mms/src/ril/MmsService.js#62
-    if (message.type === 'sms') {
-      dispatchNotification();
-    } else {
-      // Here we can only have one sender, so deliveryStatus[0] => message
-      // status from sender.
-      var status = message.deliveryStatus[0];
-      if (status === 'pending')
-        return;
 
-      // If the delivery status is manual/rejected/error, we need to apply
-      // specific text to notify user that message is not downloaded.
-      dispatchNotification(status !== 'success');
+    function handleNotification(isSilent) {
+      if (isSilent) {
+        releaseWakeLock();
+      } else {
+        // If message type is mms and pending on server, ignore the notification
+        // because it will be retrieved from server automatically. Handle other
+        // manual/error status as manual download and dispatch notification.
+        // Please ref mxr for all the possible delivery status:
+        // http://mxr.mozilla.org/mozilla-central/source/dom/mms/src/ril/
+        // MmsService.js#62
+        if (message.type === 'sms') {
+          dispatchNotification();
+        } else {
+          // Here we can only have one sender, so deliveryInfo[0].deliveryStatus
+          // => message status from sender.
+          var status = message.deliveryInfo[0].deliveryStatus;
+          if (status === 'pending') {
+            return;
+          }
+
+          // If the delivery status is manual/rejected/error, we need to apply
+          // specific text to notify user that message is not downloaded.
+          dispatchNotification(status !== 'success');
+        }
+      }
     }
+    SilentSms.checkSilentModeFor(message.sender).then(handleNotification);
   },
 
   onNotification: function ah_onNotificationClick(message) {
@@ -390,7 +557,7 @@ var ActivityHandler = {
 
       // the type param is only set for class0 messages
       if (params.type === 'class0') {
-        alert(message.title + '\n' + message.body);
+        Utils.alert({ raw: message.body }, { raw: message.title });
         return;
       }
 

@@ -1,28 +1,18 @@
-/*
-requireLib('ext/uuid.js');
-requireLib('event_mutations.js');
-requireLib('provider/abstract.js');
-requireLib('provider/local.js');
-*/
+define(function(require) {
+'use strict';
 
-requireLib('timespan.js');
+var Abstract = require('provider/abstract');
+var Factory = require('test/support/factory');
+var Local = require('provider/local');
 
-var uuid;
-
-suiteGroup('Provider.Local', function() {
-
+suite('provider/local', function() {
   var subject;
   var app;
   var db;
-  var controller;
 
   setup(function(done) {
     app = testSupport.calendar.app();
-    subject = new Calendar.Provider.Local({
-      app: app
-    });
-
-    controller = app.timeController;
+    subject = new Local({ app: app });
 
     db = app.db;
     db.open(function(err) {
@@ -45,7 +35,7 @@ suiteGroup('Provider.Local', function() {
 
   test('initialization', function() {
     assert.equal(subject.app, app);
-    assert.instanceOf(subject, Calendar.Provider.Abstract);
+    assert.instanceOf(subject, Abstract);
   });
 
   test('#getAccount', function(done) {
@@ -81,29 +71,9 @@ suiteGroup('Provider.Local', function() {
     var events;
     var busytimes;
 
-    var addEvent;
-    var addTime;
-    var removeTime;
-
     setup(function() {
       events = app.store('Event');
       busytimes = app.store('Busytime');
-
-      var span = new Calendar.Timespan(
-        0, Infinity
-      );
-
-      controller.observeTime(span, function(e) {
-        switch (e.type) {
-          case 'add':
-            addTime = e.data;
-            addEvent = controller._eventsCache[addTime.eventId];
-            break;
-          case 'remove':
-            removeTime = e.data;
-            break;
-        }
-      });
     });
 
     function find(eventId, done) {
@@ -139,8 +109,6 @@ suiteGroup('Provider.Local', function() {
           find(event._id, function(busytime, event) {
             done(function() {
               assert.deepEqual(event, event);
-              assert.deepEqual(busytimes.factory(event), busytime);
-              assert.hasProperties(addTime, busytime);
             });
           });
         });
@@ -196,7 +164,10 @@ suiteGroup('Provider.Local', function() {
         });
 
         test('busytime', function(done) {
-          assert.hasProperties(busytime, busytimes.factory(event));
+          assert.hasProperties(busytime, {
+            eventId: event._id, calendarId: event.calendarId
+          });
+
           busytimes.count(function(err, count) {
             done(function() {
               assert.equal(count, 1);
@@ -235,6 +206,7 @@ suiteGroup('Provider.Local', function() {
         });
       });
     });
-
   });
+});
+
 });

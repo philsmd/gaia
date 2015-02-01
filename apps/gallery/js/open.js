@@ -1,4 +1,4 @@
-window.addEventListener('localized', function() {
+navigator.mozL10n.once(function() {
   var activity;         // The activity object we're handling
   var activityData;     // The data sent by the initiating app
   var blob;             // The blob we'll be displaying and maybe saving
@@ -12,40 +12,40 @@ window.addEventListener('localized', function() {
 
   function $(id) { return document.getElementById(id); }
 
-  // If the image is bigger than this, decoding it will take too much
-  // memory, and we don't want to cause an OOM, so we won't display it.
-  //
-  // XXX: see bug 847060: we ought to be able to handle images bigger
-  // than 5 megapixels. But I'm getting OOMs on 8mp images, so I'm
-  // keeping this small.
-  //
-  var MAX_IMAGE_SIZE = 5 * 1024 * 1024;
-
-  // If we can't figure out the image size in megapixels, then we have to base
-  // our decision whether or not to display it on the file size. Note that
-  // this is a very, very imperfect test. imagesize.js has code to determine
-  // the image size for jpeg, png and gif images, so we only have to use this
-  // file size test for other image formats.
-  var MAX_FILE_SIZE = .5 * 1024 * 1024;
-
   function handleOpenActivity(request) {
     activity = request;
     activityData = activity.source.data;
 
     // Set up the UI, if it is not already set up
     if (!frame) {
+
       // Hook up the buttons
-      $('back').addEventListener('click', done);
+      $('header').addEventListener('action', done);
       $('save').addEventListener('click', save);
 
       // And register event handlers for gestures
-      frame = new MediaFrame($('frame'), false);
+      frame = new MediaFrame($('frame'), false, CONFIG_MAX_IMAGE_PIXEL_SIZE);
+
+      if (CONFIG_REQUIRED_EXIF_PREVIEW_WIDTH) {
+        frame.setMinimumPreviewSize(CONFIG_REQUIRED_EXIF_PREVIEW_WIDTH,
+                                    CONFIG_REQUIRED_EXIF_PREVIEW_HEIGHT);
+      }
+
       var gestureDetector = new GestureDetector(frame.container);
       gestureDetector.startDetecting();
       frame.container.addEventListener('dbltap', handleDoubleTap);
       frame.container.addEventListener('transform', handleTransform);
       frame.container.addEventListener('pan', handlePan);
       frame.container.addEventListener('swipe', handleSwipe);
+
+      window.addEventListener('resize', frame.resize.bind(frame));
+      if (activityData.exitWhenHidden) {
+        window.addEventListener('visibilitychange', function() {
+          if (document.hidden) {
+            done();
+          }
+        });
+      }
 
       // Report errors if we're passed an invalid image
       frame.onerror = function invalid() {
@@ -57,31 +57,9 @@ window.addEventListener('localized', function() {
     title = baseName(activityData.filename || '');
     $('filename').textContent = title;
 
-    // Start off with the Save button hidden.
-    // We'll enable it below in the open() function if needed.
-    $('menu').hidden = true;
-
-    // When an image file is received via bluetooth, we're invoked
-    // by the system app. But the blob that is passed has a very large
-    // invalid size field. See bug 850941. As a workaround, we use
-    // the filename that is passed along with the blob and look the file
-    // up via device storage.  When bug 850941 is fixed, we can remove
-    // this code and replace it with open(blob);
     blob = activityData.blob;
-    var filename = activityData.filename;
-    if (filename && (!blob || blob.size > 25000000)) {
-      var getrequest = navigator.getDeviceStorage('pictures').get(filename);
-      getrequest.onsuccess = function() {
-        open(getrequest.result); // this blob should have a valid size and type
-      };
-      getrequest.onerror = function() {
-        // if the file didn't exist, then try the blob
-        open(blob);
-      };
-    }
-    else {
-      open(blob);
-    }
+    open(blob);
+    NFC.share(blob);
   }
 
   // Display the specified blob, unless it is too big to display
@@ -90,10 +68,10 @@ window.addEventListener('localized', function() {
     // If the app that initiated this activity wants us to do allow the
     // user to save this blob as a file, and if device storage is available
     // and if there is enough free space, then display a save button.
-    if (activityData.allowSave && activityData.filename) {
+    if (activityData.allowSave && activityData.filename && checkFilename()) {
       getStorageIfAvailable('pictures', blob.size, function(ds) {
         storage = ds;
-        $('menu').hidden = false;
+        showSaveButton();
       });
     }
 
@@ -105,8 +83,37 @@ window.addEventListener('localized', function() {
     function success(metadata) {
       var pixels = metadata.width * metadata.height;
 
-      // If the image is too large, display an error
-      if (pixels > MAX_IMAGE_SIZE) {
+      //
+      // If the image is too big, reject it now so we don't have
+      // memory trouble later.
+      //
+      // CONFIG_MAX_IMAGE_PIXEL_SIZE is maximum image resolution we
+      // can handle.  It's from config.js which is generated at build
+      // time (see build/application-data.js).
+      //
+      // For jpeg images, we can downsample while decoding so we can
+      // handle images that are quite a bit larger
+      //
+      var imagesizelimit = CONFIG_MAX_IMAGE_PIXEL_SIZE;
+      if (blob.type === 'image/jpeg')
+        imagesizelimit *= Downsample.MAX_AREA_REDUCTION;
+
+      //
+      // Even if we can downsample an image while decoding it, we still
+      // have to read the entire image file. If the file is particularly
+      // large we might also have memory problems. (See bug 1008834: a 20mb
+      // 80mp jpeg file will cause an OOM on Tarako even though we can
+      // decode it at < 2mp). Rather than adding another build-time config
+      // variable to specify the maximum file size, however, we'll just
+      // base the file size limit on CONFIG_MAX_IMAGE_PIXEL_SIZE.
+      // So if that variable is set to 2M, then we might use up to 12Mb of
+      // memory. 2 * 2M bytes for the image file and 4 bytes times 2M pixels
+      // for the decoded image. A 4mb file size limit should accomodate
+      // most JPEG files up to 12 or 16 megapixels
+      //
+      var filesizelimit = 2 * CONFIG_MAX_IMAGE_PIXEL_SIZE;
+
+      if (pixels > imagesizelimit || blob.size > filesizelimit) {
         displayError('imagetoobig');
         return;
       }
@@ -114,7 +121,12 @@ window.addEventListener('localized', function() {
       // If there was no EXIF preview, or if the image is not very big,
       // display the full-size image.
       if (!metadata.preview || pixels < 512 * 1024) {
-        frame.displayImage(blob, metadata.width, metadata.height);
+        frame.displayImage(blob,
+                           metadata.width,
+                           metadata.height,
+                           null,
+                           metadata.rotation,
+                           metadata.mirrored);
       }
       else {
         // If we found an EXIF preview, and can determine its size, then
@@ -124,40 +136,69 @@ window.addEventListener('localized', function() {
                                      metadata.preview.end,
                                      'image/jpeg'),
                           function success(previewmetadata) {
+                            //
                             // If we parsed the preview image, add its
                             // dimensions to the metdata.preview
                             // object, and then let the MediaFrame
                             // object display the preview instead of
                             // the full-size image.
+                            //
                             metadata.preview.width = previewmetadata.width;
                             metadata.preview.height = previewmetadata.height;
                             frame.displayImage(blob,
-                                               metadata.width, metadata.height,
-                                               metadata.preview);
+                                               metadata.width,
+                                               metadata.height,
+                                               metadata.preview,
+                                               metadata.rotation,
+                                               metadata.mirrored);
                           },
                           function error() {
+                            //
                             // If we couldn't parse the preview image,
                             // just display full-size.
+                            //
                             frame.displayImage(blob,
-                                               metadata.width, metadata.height);
+                                               metadata.width,
+                                               metadata.height,
+                                               null,
+                                               metadata.rotation,
+                                               metadata.mirrored);
+
                           });
       }
     }
 
-    // Called when metadata parsing fails.
+    // Called if getImageSize parsing fails.
     function error(msg) {
       //
-      // This wasn't a JPEG, PNG, or GIF image.
+      // This wasn't a JPEG, PNG, GIF, or BMP image and we can't figure
+      // out the size of the image. Without the size, we can't pass the
+      // image to MediaFrame.displayImage().
       //
-      // If the file size isn't too large, try to display it anyway,
-      // and then display an error message if the frame.onerror
-      // function gets called.
+      // XXX: Currently, we know how to get the sizes of all the image
+      // types that this activity is registered to handle. If we add new
+      // image types to manifest.webapp, then we should update
+      // shared/js/media/image_size.js to compute the size or we should
+      // add code here to load the image into an offscreen <img> to
+      // determine its size (but only if the file size is not too large).
       //
-      if (blob.size < MAX_FILE_SIZE) {
-        frame.displayImage(blob);
-      }
-      else {
-        displayError('imagetoobig');
+      displayError('imageinvalid');
+    }
+  }
+
+  function checkFilename() {
+    // Hide save button for file names having hidden
+    // .gallery/ directories. See Bug 992426
+    if (activityData.filename.indexOf('.gallery/') != -1) {
+      return false;
+    }
+    else {
+      var dotIdx = activityData.filename.lastIndexOf('.');
+      if (dotIdx > -1) {
+        var ext = activityData.filename.substr(dotIdx + 1);
+        return MimeMapper.guessTypeFromExtension(ext) === blob.type;
+      } else {
+        return false;
       }
     }
   }
@@ -170,6 +211,7 @@ window.addEventListener('localized', function() {
   function done() {
     activity.postResult({ saved: saved });
     activity = null;
+    NFC.unshare();
   }
 
   function handleDoubleTap(e) {
@@ -200,10 +242,9 @@ window.addEventListener('localized', function() {
   }
 
   function save() {
-    // Hide the menu that holds the save button: we can only save once
-    $('menu').hidden = true;
-    // XXX work around bug 870619
-    $('filename').textContent = $('filename').textContent;
+
+    // Hides the save button: we can only save once
+    hideSaveButton();
 
     getUnusedFilename(storage, activityData.filename, function(filename) {
       var savereq = storage.addNamed(blob, filename);
@@ -212,7 +253,7 @@ window.addEventListener('localized', function() {
         // to the invoking app
         saved = filename;
         // And tell the user
-        showBanner(navigator.mozL10n.get('saved', { filename: title }));
+        showBanner('saved', title);
       };
       savereq.onerror = function(e) {
         // XXX we don't report this to the user because it is hard to
@@ -222,8 +263,20 @@ window.addEventListener('localized', function() {
     });
   }
 
-  function showBanner(msg) {
-    $('message').textContent = msg;
+  function showSaveButton() {
+    $('save').classList.remove('hidden');
+    // XXX work around bug 870619
+    $('filename').textContent = $('filename').textContent;
+  }
+
+  function hideSaveButton() {
+    $('save').classList.add('hidden');
+    // XXX work around bug 870619
+    $('filename').textContent = $('filename').textContent;
+  }
+
+  function showBanner(msg, title) {
+    navigator.mozL10n.setAttributes($('message'), msg, {filename: title});
     $('banner').hidden = false;
     setTimeout(function() {
       $('banner').hidden = true;

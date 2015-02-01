@@ -1,102 +1,95 @@
-require('/shared/js/l10n.js');
+'use strict';
+suite('Alarm Test', function() {
 
-requireApp('clock/js/utils.js');
-requireApp('clock/js/alarmsdb.js');
-requireApp('clock/js/alarmManager.js');
-requireApp('clock/js/alarm.js');
+  var Alarm;
+  var activeAlarm;
+  var alarmDatabase;
 
-suite('AlarmEditView', function() {
-  var subject;
-
-  before(function() {
-    subject = AlarmEditView;
-
-    // shim the edit alarm view
-    delete subject.element;
-    subject.element = document.createElement('div');
-    subject.element.dataset.id = '';
-    delete subject.labelInput;
-    subject.labelInput = document.createElement('input');
-    delete subject.timeSelect;
-    subject.timeSelect = document.createElement('input');
-    subject.initTimeSelect();
-
-    sinon.stub(subject, 'getSoundSelect');
-    sinon.stub(subject, 'getVibrateSelect');
-    sinon.stub(subject, 'getSnoozeSelect');
-    sinon.stub(subject, 'getRepeatSelect');
+  suiteSetup(function(done) {
+    require(['alarm', 'alarm_database', 'panels/alarm/active_alarm'],
+      function(alarm, alarm_database, ActiveAlarm) {
+        Alarm = alarm;
+        activeAlarm = new ActiveAlarm();
+        alarmDatabase = alarm_database;
+        done();
+      }
+    );
   });
 
-  beforeEach(function() {
-    subject.alarm = subject.getDefaultAlarm();
-    subject.getSoundSelect.returns(subject.alarm.sound);
-    subject.getVibrateSelect.returns(subject.alarm.vibrate);
-    subject.getSnoozeSelect.returns(subject.alarm.snooze);
-    subject.getRepeatSelect.returns(subject.alarm.repeat);
-  });
+  suite('Date handling', function() {
 
-  after(function() {
-    subject.getSoundSelect.restore();
-    subject.getVibrateSelect.restore();
-    subject.getSnoozeSelect.restore();
-    subject.getRepeatSelect.restore();
-  });
+    //var now = new Date(1398387324081); // thursday
+    var now = new Date(Date.UTC(2014, 3, 24)); // thursday
 
-  test('should save and delete an alarm', function(done) {
-    var spyRefresh = sinon.stub(AlarmList, 'refresh');
-    subject.save(function(alarm) {
-      assert.ok(alarm.id);
-      sinon.assert.calledOnce(spyRefresh);
-      subject.alarm = alarm;
-      subject.element.dataset.id = alarm.id;
-      subject.delete(function() {
-        sinon.assert.calledTwice(spyRefresh);
-        AlarmList.refresh.restore();
+    setup(function() {
+      this.alarm = new Alarm({
+        hour: 4,
+        minute: 20,
+        repeat: {
+          monday: true, wednesday: true, friday: true
+        }
+      });
+    });
+
+    test('basic properties and serialization', function() {
+      assert.deepEqual(this.alarm.toJSON(), {
+        id: null,
+        registeredAlarms: {},
+        repeat: { monday: true, wednesday: true, friday: true },
+        hour: 4,
+        minute: 20,
+        label: '',
+        sound: 'ac_awake.opus',
+        vibrate: true,
+        snooze: 10
+      });
+    });
+
+    test('alarm is enabled when snoozed', function(done) {
+      this.alarm.schedule('snooze').then(function() {
+        assert.ok(this.alarm.isEnabled());
+        done();
+      }.bind(this));
+    });
+
+    test('schedule saves alarm', function(done) {
+      var spy = sinon.spy(alarmDatabase, 'put');
+      this.alarm.schedule('normal').then(function() {
+        spy.restore();
+        assert.ok(spy.called);
         done();
       });
     });
-  });
 
-  test('should add an alarm with sound, no vibrate', function(done) {
-    var spyRefresh = sinon.stub(AlarmList, 'refresh');
-
-    // mock the view to turn off vibrate
-    subject.getVibrateSelect.returns('0');
-    subject.save(function(alarm) {
-      assert.ok(alarm.id);
-      sinon.assert.calledOnce(spyRefresh);
-      AlarmList.refresh.restore();
-      AlarmManager.getAlarmById(alarm.id, function(alarm) {
-        assert.equal(alarm.vibrate, 0);
-        assert.notEqual(alarm.sound, 0);
+    test('cancel saves alarm', function(done) {
+      var spy = sinon.spy(alarmDatabase, 'put');
+      this.alarm.cancel().then(function() {
+        spy.restore();
+        assert.ok(spy.called);
         done();
       });
     });
-  });
 
-  test('should update existing alarm with no sound, vibrate', function(done) {
-    var spyRefresh = sinon.stub(AlarmList, 'refresh');
+    test('getNextAlarmFireTime', function() {
+      // Today is thursday; the alarm fires first on Friday:
+      var when = this.alarm.getNextAlarmFireTime(now);
+      assert.equal(when.getDay(), 5); // Friday
 
-    // mock the view to turn sound on and vibrate off
-    subject.getVibrateSelect.returns('0');
-    subject.save(function(alarm) {
-      assert.ok(alarm.id);
-      sinon.assert.calledOnce(spyRefresh);
-      subject.getVibrateSelect.returns('1');
-      subject.getSoundSelect.returns('0');
-      subject.alarm = alarm;
-      subject.element.dataset.id = alarm.id;
-      subject.save(function(alarm) {
-        assert.ok(alarm.id);
-        sinon.assert.calledTwice(spyRefresh);
-        AlarmList.refresh.restore();
-        AlarmManager.getAlarmById(alarm.id, function(alarm) {
-          assert.equal(alarm.vibrate, 1);
-          assert.equal(alarm.sound, 0);
-          done();
-        });
-      });
+      // After Friday, it should fire on Monday at the same time:
+      var secondAlarm = this.alarm.getNextAlarmFireTime(when);
+      assert.equal(secondAlarm.getHours(), when.getHours()); // at the same time
+      assert.equal(secondAlarm.getMinutes(), when.getMinutes());
+      assert.equal(secondAlarm.getDay(), 1); // on Monday
+      // And again on Wednesday
+      var thirdAlarm = this.alarm.getNextAlarmFireTime(secondAlarm);
+      assert.equal(thirdAlarm.getHours(), secondAlarm.getHours());
+      assert.equal(thirdAlarm.getMinutes(), secondAlarm.getMinutes());
+      assert.equal(thirdAlarm.getDay(), 3); // on Wednesday
+    });
+
+    test('getNextSnoozeFireTime', function() {
+      assert.equal(this.alarm.getNextSnoozeFireTime(now).getTime(),
+                   now.getTime() + (10 * 60 * 1000));
     });
   });
-
 });

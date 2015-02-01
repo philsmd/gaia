@@ -1,251 +1,182 @@
-const INSTALL_TIME = 132333986000; // Match this to value in applications-data.js
+'use strict';
+/* global require, exports */
+// Generate webapps_stage.json.
 
-function debug(msg) {
-  //dump('-*- webapp-manifest.js: ' + msg + '\n');
-}
+var utils = require('./utils');
 
-let io = Cc['@mozilla.org/network/io-service;1']
-           .getService(Components.interfaces.nsIIOService);
+const UUID_FILENAME = 'uuid.json';
 
-let webappsTargetDir = Cc['@mozilla.org/file/local;1']
-               .createInstance(Ci.nsILocalFile);
-webappsTargetDir.initWithPath(PROFILE_DIR);
-// Create profile folder if doesn't exists
-if (!webappsTargetDir.exists())
-  webappsTargetDir.create(Ci.nsIFile.DIRECTORY_TYPE, parseInt('0755', 8));
-// Create webapps folder if doesn't exists
-webappsTargetDir.append('webapps');
-if (!webappsTargetDir.exists())
-  webappsTargetDir.create(Ci.nsIFile.DIRECTORY_TYPE, parseInt('0755', 8));
+var ManifestBuilder = function() {
+  this.INSTALL_TIME = Date.now();
+  this.UPDATE_TIME = Date.now();
+};
 
-let manifests = {};
+ManifestBuilder.prototype.setConfig = function(config) {
+  this.id = 1;
+  this.config = config;
+  this.errors = [];
+  this.gaia = utils.gaia.getInstance(this.config);
+  this.stageManifests = {};
+  this.manifests = {};
+  this.webapps = {};
+  this.stageDir = this.gaia.stageDir;
+  utils.ensureFolderExists(this.stageDir);
+};
 
-let id = 1;
+ManifestBuilder.prototype.genStageWebappJSON = function() {
+  var manifestFile = this.stageDir.clone();
+  manifestFile.append('webapps_stage.json');
+  utils.writeContent(manifestFile,
+    JSON.stringify(this.stageManifests, null, 2) + '\n');
+};
 
-function copyRec(source, target) {
-  let results = [];
-  let files = source.directoryEntries;
-  if (!target.exists())
-    target.create(Ci.nsIFile.DIRECTORY_TYPE, parseInt('0755', 8));
+ManifestBuilder.prototype.genUuidJSON = function() {
+  var uuidFile = this.stageDir.clone();
+  uuidFile.append(UUID_FILENAME);
+  utils.writeContent(uuidFile,
+    JSON.stringify(utils.getUUIDMapping(this.config), null, 2) + '\n');
+};
 
-  while (files.hasMoreElements()) {
-    let file = files.getNext().QueryInterface(Ci.nsILocalFile);
-    if (file.isDirectory()) {
-      let subFolder = target.clone();
-      subFolder.append(file.leafName);
-      copyRec(file, subFolder);
-    } else {
-      file.copyTo(target, file.leafName);
+ManifestBuilder.prototype.fillExternalAppManifest = function(webapp) {
+  var isPackaged = false;
+  if (webapp.pckManifest) {
+    isPackaged = true;
+    if (webapp.metaData.origin) {
+      this.errors.push('External webapp `' + webapp.sourceDirectoryName +
+                       '` can not have origin in metadata because is packaged');
+      return;
     }
   }
-}
 
-// Returns the nsIPrincipal compliant integer
-// from the "type" property in manifests.
-function getAppStatus(status) {
-  let appStatus = 1; // By default, apps are installed
-  switch (status) {
-    case "certified":
-      appStatus = 3;
-      break;
-    case "privileged":
-      appStatus = 2;
-      break;
-    case "web":
-    default:
-      appStatus = 1;
-      break;
-  }
-  return appStatus;
-}
+  var webappTargetDirName = webapp.profileDirectoryFile.leafName;
 
-function checkOrigin(origin) {
-  try {
-    return (io.newURI(origin, null, null).prePath === origin);
-  } catch (e) {
-    return false;
-  }
-}
-
-Gaia.webapps.forEach(function (webapp) {
-  // If BUILD_APP_NAME isn't `*`, we only accept one webapp
-  if (BUILD_APP_NAME != '*' && webapp.sourceDirectoryName != BUILD_APP_NAME)
-    return;
-
-  // Compute webapp folder name in profile
-  let webappTargetDirName = webapp.domain;
-
-  // Copy webapp's manifest to the profile
-  let webappTargetDir = webappsTargetDir.clone();
-  webappTargetDir.append(webappTargetDirName);
-  webapp.manifestFile.copyTo(webappTargetDir, 'manifest.webapp');
-
-  // Add webapp's entry to the webapps global manifest.
-  // appStatus == 3 means this is a certified app.
-  // appStatus == 2 means this is a privileged app.
-  // appStatus == 1 means this is an installed (unprivileged) app
-
-  var localId = id++;
-  // localId start from 1 in release build. For DESKTOP=1 build the system
-  // app can run inside Firefox desktop inside a regular tab and so the
-  // permissions set based on a principal are not working.
-  // To make it works the system app will be assigned an id of 0, which
-  // is the equivalent of the const NO_APP_ID.
-  if (DESKTOP && webappTargetDirName == ('system.' + GAIA_DOMAIN)) {
-    localId = 0;
+  var origin = isPackaged ? 'app://' + webappTargetDirName :
+               webapp.metaData.origin;
+  if (!origin) {
+    origin = 'app://' + webappTargetDirName;
   }
 
-  let url = webapp.url;
-  manifests[webappTargetDirName] = {
-    origin:        url,
-    installOrigin: url,
-    receipt:       null,
-    installTime:   INSTALL_TIME,
-    manifestURL:   url + '/manifest.webapp',
-    appStatus:     getAppStatus(webapp.manifest.type),
-    localId:       localId
-  };
-
-});
-
-let errors = [];
-
-// Process external webapps from /gaia/external-app/ folder
-Gaia.externalWebapps.forEach(function (webapp) {
-  // If BUILD_APP_NAME isn't `*`, we only accept one webapp
-  if (BUILD_APP_NAME != '*' && webapp.sourceDirectoryName != BUILD_APP_NAME)
-    return;
-
-  if (!webapp.metaData) {
+  if (!this.checkOrigin(origin)) {
+    this.errors.push('External webapp `' + webapp.domain + '` has an invalid ' +
+                'origin: ' + origin);
     return;
   }
 
-  // Compute webapp folder name in profile
-  let webappTargetDirName = webapp.sourceDirectoryName;
+  var installOrigin = webapp.metaData.installOrigin || origin;
+  if (!this.checkOrigin(installOrigin)) {
+    this.errors.push('External webapp `' + webapp.domain + '` has an invalid ' +
+                'installOrigin: ' + installOrigin);
+    return;
+  }
 
-  // Copy webapp's manifest to the profile
-  let webappTargetDir = webappsTargetDir.clone();
-  webappTargetDir.append(webappTargetDirName);
-
-  let removable;
-  let manifestURL = webapp.metaData.manifestURL;
-
+  var manifestURL = webapp.metaData.manifestURL;
   if (!manifestURL) {
-    errors.push('External webapp `' + webapp.domain + '` does not have the ' +
-                'mandatory manifestURL property.');
+    this.errors.push('External webapp `' + webapp.domain +
+                  '` does not have the mandatory manifestURL property.');
     return;
   }
-
-  let manifestURI;
+  var manifestURI;
   try {
-    manifestURI = io.newURI(manifestURL, null, null);
+    manifestURI = utils.getNewURI(manifestURL);
   } catch (e) {
-    let msg = 'Error ' + e.name + ' while parsing manifestURL for webapp ' +
+    var msg = 'Error ' + e.name + ' while parsing manifestURL for webapp ' +
                webapp.domain + ': ' + manifestURL;
     if (e.name === 'NS_ERROR_MALFORMED_URI') {
       msg += '\n    Is it an absolute URL?';
     }
 
-    errors.push(msg);
+    this.errors.push(msg);
     return;
   }
 
   if (manifestURI.scheme === 'app') {
-    dump('Warning: external webapp `' + webapp.domain + '` has a manifestURL ' +
-          'with an app:// scheme, which makes it non-updatable.\n');
+    utils.log('Warning: external webapp `' + webapp.domain +
+              '` has a manifestURL ' +
+              'with an app:// scheme, which makes it non-updatable.\n');
   }
 
-  let origin = webapp.metaData.origin;
-  if (origin) {
-    if (!checkOrigin(origin)) {
-      errors.push('External webapp `' + webapp.domain + '` has an invalid ' +
-                  'origin: ' + origin);
-      return;
-    }
+  var removable = ('removable' in webapp.metaData) ?
+                  !!webapp.metaData.removable : true;
+
+  var etag = webapp.metaData.etag || null;
+  var packageEtag = webapp.metaData.packageEtag || null;
+  this.stageManifests[webapp.sourceDirectoryName] = {
+    originalManifest: webapp.manifest,
+    origin: origin,
+    manifestURL: manifestURL,
+    installOrigin: installOrigin,
+    receipt: null,
+    installTime: this.INSTALL_TIME,
+    updateTime: this.UPDATE_TIME,
+    removable: removable,
+    localId: this.id++,
+    etag: etag,
+    packageEtag: packageEtag,
+    appStatus: webapp.appStatus,
+    webappTargetDirName: webappTargetDirName
+  };
+};
+
+ManifestBuilder.prototype.checkOrigin = function(origin) {
+  try {
+    return (utils.getNewURI(origin).prePath === origin);
+  } catch (e) {
+    return false;
+  }
+};
+
+ManifestBuilder.prototype.fillAppManifest = function(webapp) {
+  var origin = webapp.url;
+
+  var installOrigin = origin;
+  if (webapp.metadata && webapp.metadata.installOrigin) {
+    installOrigin = webapp.metadata.installOrigin;
+  }
+
+  this.stageManifests[webapp.sourceDirectoryName] = {
+    originalManifest: webapp.manifest,
+    origin: origin,
+    manifestURL: origin + '/manifest.webapp',
+    installOrigin: installOrigin,
+    receipt: null,
+    installTime: this.INSTALL_TIME,
+    updateTime: this.UPDATE_TIME,
+    localId: this.id++,
+    appStatus: webapp.appStatus,
+    webappTargetDirName: webapp.domain
+  };
+};
+
+ManifestBuilder.prototype.genManifest = function(webapp) {
+  if (utils.isExternalApp(webapp)) {
+    this.fillExternalAppManifest(webapp);
   } else {
-    origin = manifestURI.prePath;
+    this.fillAppManifest(webapp);
   }
+};
 
-  let installOrigin = webapp.metaData.installOrigin || origin;
-  if (!checkOrigin(installOrigin)) {
-    errors.push('External webapp `' + webapp.domain + '` has an invalid ' +
-                'installOrigin: ' + installOrigin);
+ManifestBuilder.prototype.manifestErrorSummary = function() {
+  if (this.errors.length === 0) {
     return;
   }
 
-  // In case of packaged app, just copy `application.zip` and `update.webapp`
-  let appPackage = webapp.sourceDirectoryFile.clone();
-  appPackage.append('application.zip');
-  if (appPackage.exists()) {
-    let updateManifest = webapp.sourceDirectoryFile.clone();
-    updateManifest.append('update.webapp');
-    if (!updateManifest.exists()) {
-      errors.push('External packaged webapp `' + webapp.domain + '  is ' +
-                  'missing an `update.webapp` file. This JSON file ' +
-                  'contains a `package_path` attribute specifying where ' +
-                  'to download the application zip package from the origin ' +
-                  'specified in `metadata.json` file.');
-      return;
-    }
-    appPackage.copyTo(webappTargetDir, 'application.zip');
-    updateManifest.copyTo(webappTargetDir, 'update.webapp');
-    removable = ("removable" in webapp.metaData) ? !!webapp.metaData.removable
-                                                 : true;
-  } else {
-    webapp.manifestFile.copyTo(webappTargetDir, 'manifest.webapp');
-    removable = ("removable" in webapp.metaData) ? !!webapp.metaData.removable
-                                                 : true;
-
-    // This is an hosted app. Check if there is an offline cache.
-    let srcCacheFolder = webapp.sourceDirectoryFile.clone();
-    srcCacheFolder.append('cache');
-    if (srcCacheFolder.exists()) {
-      let cacheManifest = srcCacheFolder.clone();
-      cacheManifest.append('manifest.appcache');
-      if (!cacheManifest.exists()) {
-        errors.push('External webapp `' + webapp.domain + '` has a cache ' +
-                    'directory without `manifest.appcache` file.');
-        return;
-      }
-
-      // Copy recursively the whole cache folder to webapp folder
-      let targetCacheFolder = webappTargetDir.clone();
-      targetCacheFolder.append('cache');
-      copyRec(srcCacheFolder, targetCacheFolder);
-    }
-  }
-
-  let etag = webapp.metaData.etag || null;
-  let packageEtag = webapp.metaData.packageEtag || null;
-
-  // Add webapp's entry to the webapps global manifest
-  manifests[webappTargetDirName] = {
-    origin:        origin,
-    installOrigin: installOrigin,
-    receipt:       null,
-    installTime:   132333986000,
-    manifestURL:   manifestURL,
-    removable:     removable,
-    localId:       id++,
-    etag:          etag,
-    packageEtag:   packageEtag,
-    appStatus:     getAppStatus(webapp.metaData.type || "web"),
-  };
-
-});
-
-if (errors.length) {
-  var introMessage = 'We got ' + errors.length + ' manifest error' +
-    ((errors.length > 1) ? 's' : '') + ' while building:';
-  errors.unshift(introMessage);
-  var message = errors.join('\n * ') + '\n';
+  var introMessage = 'We got ' + this.errors.length + ' manifest error' +
+    ((this.errors.length > 1) ? 's' : '') + ' while building:';
+  this.errors.unshift(introMessage);
+  var message = this.errors.join('\n * ') + '\n';
   throw new Error(message);
-}
+};
 
-// Write webapps global manifest
-let manifestFile = webappsTargetDir.clone();
-manifestFile.append('webapps.json');
+ManifestBuilder.prototype.execute = function(config) {
+  this.setConfig(config);
+  this.gaia.webapps.forEach(this.genManifest, this);
+  this.manifestErrorSummary();
+  this.genStageWebappJSON();
+  this.genUuidJSON();
+};
 
-// stringify json with 2 spaces indentation
-writeContent(manifestFile, JSON.stringify(manifests, null, 2) + '\n');
+exports.execute = function(config) {
+  (new ManifestBuilder()).execute(config);
+};
 
+exports.ManifestBuilder = ManifestBuilder;

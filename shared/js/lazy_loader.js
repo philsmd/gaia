@@ -1,3 +1,5 @@
+/* exported LazyLoader */
+/* globals HtmlImports, Promise */
 'use strict';
 
 /**
@@ -8,7 +10,6 @@
  *    ['/path/to/file.js', '/path/to/file.css', 'domNode'], callback
  *   );
  */
-
 var LazyLoader = (function() {
 
   function LazyLoader() {
@@ -21,6 +22,10 @@ var LazyLoader = (function() {
     _js: function(file, callback) {
       var script = document.createElement('script');
       script.src = file;
+      // until bug 916255 lands async is the default so
+      // we must disable it so scripts load in the order they where
+      // required.
+      script.async = false;
       script.addEventListener('load', callback);
       document.head.appendChild(script);
       this._isLoading[file] = script;
@@ -36,35 +41,93 @@ var LazyLoader = (function() {
     },
 
     _html: function(domNode, callback) {
+
+      // The next few lines are for loading html imports in DEBUG mode
+      if (domNode.getAttribute('is')) {
+        this.load(['/shared/js/html_imports.js'], function() {
+          HtmlImports.populate(callback);
+        }.bind(this));
+        return;
+      }
+
       for (var i = 0; i < domNode.childNodes.length; i++) {
         if (domNode.childNodes[i].nodeType == document.COMMENT_NODE) {
           domNode.innerHTML = domNode.childNodes[i].nodeValue;
           break;
         }
       }
+
+      window.dispatchEvent(new CustomEvent('lazyload', {
+        detail: domNode
+      }));
+
       callback();
     },
 
+    /**
+     * Retrieves content of JSON file.
+     *
+     * @param {String} file Path to JSON file
+     * @param {Boolean} mozSystem If xhr should use mozSystem permissions
+     * @return {Promise} A promise that resolves to the JSON content
+     * or null in case of invalid path. Rejects if an error occurs.
+     */
+    getJSON: function(file, mozSystem) {
+      return new Promise(function(resolve, reject) {
+        var xhr;
+        if (mozSystem) {
+          xhr = new XMLHttpRequest({mozSystem: true});
+        } else {
+          xhr = new XMLHttpRequest();
+        }
+        xhr.open('GET', file, true);
+        xhr.responseType = 'json';
+
+        xhr.onerror = function(error) {
+          reject(error);
+        };
+        xhr.onload = function() {
+          if (xhr.response !== null) {
+            resolve(xhr.response);
+          } else {
+            reject(new Error('No valid JSON object was found (' + 
+			     xhr.status + ' ' + xhr.statusText + ')'));
+          }
+        };
+
+        xhr.send();
+      });
+    },
+
     load: function(files, callback) {
-      if (!Array.isArray(files))
+      var deferred = {};
+      deferred.promise = new Promise(resolve => {
+        deferred.resolve = resolve;
+      });
+
+      if (!Array.isArray(files)) {
         files = [files];
+      }
 
       var loadsRemaining = files.length, self = this;
       function perFileCallback(file) {
-        if (self._isLoading[file])
+        if (self._isLoading[file]) {
           delete self._isLoading[file];
+        }
         self._loaded[file] = true;
 
         if (--loadsRemaining === 0) {
-          if (callback)
+          deferred.resolve();
+          if (callback) {
             callback();
+          }
         }
       }
 
       for (var i = 0; i < files.length; i++) {
         var file = files[i];
 
-        if (this._loaded[file]) {
+        if (this._loaded[file.id || file]) {
           perFileCallback(file);
         } else if (this._isLoading[file]) {
           this._isLoading[file].addEventListener(
@@ -72,7 +135,7 @@ var LazyLoader = (function() {
         } else {
           var method, idx;
           if (typeof file === 'string') {
-            method = file.match(/\.(.*?)$/)[1];
+            method = file.match(/\.([^.]+)$/)[1];
             idx = file;
           } else {
             method = 'html';
@@ -82,6 +145,8 @@ var LazyLoader = (function() {
           this['_' + method](file, perFileCallback.bind(null, idx));
         }
       }
+
+      return deferred.promise;
     }
   };
 

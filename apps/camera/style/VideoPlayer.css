@@ -1,8 +1,16 @@
+
+/**
+ * This file adds custom styles to
+ * the unstyled video component
+ * inside sharedjs.
+ */
+
 /* styles for the video element itself */
-.videoPoster, .videoPlayer {
+.videoPoster,
+.videoPlayer {
   position: absolute;
   left: 0; /* we position it with a transform */
-  top:0;
+  top: 0;
   transform-origin: 0 0;
 }
 
@@ -17,21 +25,47 @@
   padding: 0;
 }
 
-.videoPlayerPlayButton {
+.videoPlayerPlayButton:before {
+  content: "";
   position: absolute;
-  width: 10.6rem;
-  height: 10.6rem;
-  left: calc(50% - 5.3rem);
-  top: calc(50% - 5.3rem);
-  background: url("images/video_play_button.png")no-repeat center center / 10.6rem,
-              url("images/video_play_normal.png")no-repeat center center / 10.6rem;
-  border-width: 0;
+  top: 50%;
+  left: 50%;
+  width: 9.2rem;
+  height: 9.2rem;
+  margin: -4.6rem 0 0 -4.6rem;
+  border-radius: 50%;
+  background-color: rgba(0,0,0, .65);
 }
 
-.videoPlayerPlayButton:active {
-  background: url("images/video_play_button.png")no-repeat center center / 10.6rem,
-              url("images/video_play_focus.png")no-repeat center center / 10.6rem
+.videoPlayerPlayButton {
+  position: absolute;
+  width: 10rem;
+  height: 10rem;
+  left: calc(50% - 5rem);
+  top: calc(50% - 5rem);
+  border-radius: 50%;
+  border-width: 0;
+
 }
+
+.videoPlayerPlayButton:after {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 10rem;
+  height: 10rem;
+  border-radius: 50%;
+  background-image: url("images/video_play_button.png");
+  background-repeat: no-repeat;
+  background-position: 50% 50%;
+  background-size: 10rem;
+}
+
+.videoPlayerPlayButton:active:before {
+  background-color: rgba(13,108,128, .8);
+}
+
 
 .videoPlayerPlayButton.hidden {
   opacity: 0;
@@ -49,7 +83,6 @@
   overflow: hidden;
   opacity: 1;
   transition: opacity 0.5s;
-  -moz-user-select: none;
 }
 
 .videoPlayerFooter.hidden {
@@ -63,7 +96,7 @@
   height: 10rem;
   padding: 0;
   margin: 0;
-  background: url("images/video_pause_button.png") no-repeat center center / 9.6rem,
+  background: url("images/video_pause_button.png") no-repeat center center / 3rem,
               rgba(0,0,0,.5);
   border-radius: 5.3rem;
   border: solid #ccc 0.3rem;
@@ -72,7 +105,7 @@
 }
 
 .videoPlayerPauseButton:active {
-  background: url("images/video_pause_button.png") no-repeat center center / 9.6rem,
+  background: url("images/video_pause_button.png") no-repeat center center / 3rem,
               url("images/video_play_focus.png") no-repeat center center / 10.6rem
 }
 
@@ -105,8 +138,22 @@ button::-moz-focus-inner {
   left: 1rem;
 }
 
+html[dir="rtl"] .videoPlayerElapsedText {
+  right: 1rem;
+  left: unset;
+}
+
 .videoPlayerDurationText {
   right: 1rem;
+}
+
+html[dir="rtl"] .videoPlayerDurationText {
+  left: 1rem;
+  right: unset;
+}
+
+.videoPlayerFullscreenButton {
+  display: none;
 }
 
 .videoPlayerProgress {
@@ -122,9 +169,10 @@ button::-moz-focus-inner {
   pointer-events: none;
 }
 
-.videoPlayerElapsedBar, .videoPlayerBackgroundBar {
+.videoPlayerElapsedBar,
+.videoPlayerBackgroundBar {
   height: 0.4rem;
-  width: 0%;
+  width: 0;
   top: 50%;
   margin-top: -0.2rem;
   border-radius: 0.6rem;
@@ -146,6 +194,6 @@ button::-moz-focus-inner {
   border-radius: 2.5rem;
   background-color: white;
   top: 50%;
-  margin: -1rem 0 0 -1.2rem;
+  margin-top: -1rem;
+  -moz-margin-start: -1.2rem;
 }
-

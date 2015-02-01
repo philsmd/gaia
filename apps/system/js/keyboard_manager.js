@@ -1,125 +1,352 @@
 'use strict';
 
-var KeyboardManager = (function() {
-  var keyboardHeight = 0;
+/* global IMESwitcher, ImeMenu, KeyboardHelper, inputWindowManager,
+          InputLayouts, LazyLoader, DynamicInputRegistry */
 
-  function getKeyboardURL() {
-    // TODO: Retrieve it from Settings, allowing 3rd party keyboards
-    var host = document.location.host;
-    var domain = host.replace(/(^[\w\d]+\.)?([\w\d]+\.[a-z]+)/, '$2');
-    var protocol = document.location.protocol;
+/**
+ * For some flow diagrams related to input management, please refer to
+ * https://wiki.mozilla.org/Gaia/System/InputManagement#Flow_Diagrams .
+ */
 
-    return protocol + '//keyboard.' + domain + '/';
-  }
+// If we get a inputmethod-contextchange chrome event for an element with
+// one of these types, we'll just ignore it.
+// XXX we won't skip these types in the future when we move value selector
+// to an app.
+const IGNORED_INPUT_TYPES = {
+  'select-one': true,
+  'select-multiple': true,
+  'date': true,
+  'time': true,
+  'datetime': true,
+  'datetime-local': true
+};
 
-  function generateKeyboard(container, keyboardURL, manifestURL) {
-    var keyboard = document.createElement('iframe');
-    keyboard.src = keyboardURL;
-    keyboard.setAttribute('mozbrowser', 'true');
-    keyboard.setAttribute('mozpasspointerevents', 'true');
-    keyboard.setAttribute('mozapp', manifestURL);
-    //keyboard.setAttribute('remote', 'true');
+const TYPE_GROUP_MAPPING = {
+  // text
+  'text': 'text',
+  'textarea': 'text',
+  'url': 'url',
+  'email': 'email',
+  'password': 'password',
+  'search': 'text',
+  // number
+  'number': 'number',
+  'tel': 'number',
+  // option
+  'select-one': 'option',
+  'select-multiple': 'option',
+  'time': 'option',
+  'week': 'option',
+  'month': 'option',
+  'date': 'option',
+  'datetime': 'option',
+  'datetime-local': 'option',
+  'color': 'option'
+};
 
-    container.appendChild(keyboard);
-    return keyboard;
-  }
+// How long to wait before we actually switch layouts
+const SWITCH_CHANGE_DELAY = 20;
 
-  // Generate a <iframe mozbrowser> containing the keyboard.
-  var container = document.getElementById('keyboard-frame');
-  var keyboardURL = getKeyboardURL() + 'index.html';
-  var manifestURL = getKeyboardURL() + 'manifest.webapp';
-  var keyboard = generateKeyboard(container, keyboardURL, manifestURL);
+window.KeyboardManager = {
+  // this info keeps the current keyboard's input type group; the string serves
+  // as a reference to access inputLayouts.layouts[group] for current layout's
+  // index and the layout.
+  // when we don't have a current keyboard, this is set to null
+  _showingInputGroup: null,
 
-  // Listen for mozbrowserlocationchange of keyboard iframe.
-  var previousHash = '';
+  _switchChangeTimeout: 0,
+  _onDebug: false,
+  _debug: function km_debug(msg) {
+    if (this._onDebug) {
+      console.log('[Keyboard Manager] ' + msg);
+    }
+  },
 
-  var urlparser = document.createElement('a');
-  var appClosing = false;
-  keyboard.addEventListener('mozbrowserlocationchange', function(e) {
-    urlparser.href = e.detail;
-    if (previousHash == urlparser.hash)
+  init: function km_init() {
+    this.imeSwitcher = new IMESwitcher();
+    this.imeSwitcher.ontap = this._showImeMenu.bind(this);
+    this.imeSwitcher.start();
+
+    window.addEventListener('keyboardhide', this);
+
+    // To handle keyboard layout switching
+    window.addEventListener('mozChromeEvent', this);
+
+    this.inputLayouts = new InputLayouts(this, TYPE_GROUP_MAPPING);
+    this.inputLayouts.start();
+
+    // get enabled keyboard from mozSettings, parse their manifest
+    LazyLoader.load([
+      'js/dynamic_input_registry.js',
+      'shared/js/input_mgmt/input_app_list.js',
+      'shared/js/keyboard_helper.js'
+    ], function() {
+      // Defer the loading of DynamicInputRegistry only after
+      // KeyboardHelper is present. Not that is possible we could miss some
+      // mozChromeEvent because of this but let's not deal with that kind of
+      // extreme case.
+      this.dynamicInputRegistry = new DynamicInputRegistry();
+      this.dynamicInputRegistry.start();
+
+      KeyboardHelper.watchLayouts(
+        { enabled: true }, this._updateLayouts.bind(this)
+      );
+    }.bind(this));
+  },
+
+  _tryLaunchOnBoot: function km_launchOnBoot() {
+    if (inputWindowManager.getLoadedManifestURLs().length) {
+      // There are already keyboard(s) being launched. We don't really care
+      // if a default keyboard should be launch-on-boot.
       return;
-    previousHash = urlparser.hash;
+    }
 
-    var type = urlparser.hash.split('=');
-    switch (type[0]) {
-      case '#show':
+    var LAUNCH_ON_BOOT_KEY = 'keyboard.launch-on-boot';
+    var req = navigator.mozSettings.createLock().get(LAUNCH_ON_BOOT_KEY);
+    req.onsuccess = req.onerror = (function() {
+      // If the value is not set or it is set to true,
+      // launch the keyboad in background
+      var launchOnBoot = req.result && req.result[LAUNCH_ON_BOOT_KEY];
+      if (typeof launchOnBoot !== 'boolean') {
+        launchOnBoot = true;
+      }
 
-        // If an app is closing, we should ignore any #show triggered by
-        // resize events which come from orientation change events.
-        if (appClosing) {
-          return;
+      // if there are still no keyboards running at this point -
+      // set text to show, but don't bring it to the foreground.
+      if (launchOnBoot &&
+          !inputWindowManager.getLoadedManifestURLs().length) {
+        this._preloadKeyboard();
+      }
+    }).bind(this);
+  },
+
+  _updateLayouts: function km_updateLayouts(layouts) {
+    var enabledApps = this.inputLayouts.processLayouts(layouts);
+
+    var manifestURLsToRemove =
+      inputWindowManager.getLoadedManifestURLs().filter(
+        manifestURL => !enabledApps.has(manifestURL)
+      );
+
+    // explicitly assign a variable for code clarity
+    var currentLayoutRemoved =
+      inputWindowManager._onInputLayoutsRemoved(manifestURLsToRemove);
+
+    if (currentLayoutRemoved) {
+      this._showingInputGroup = null;
+    }
+
+    this._tryLaunchOnBoot();
+  },
+
+  // a showing keyboard instance was OOM-killed. we need to relaunch something.
+  _onKeyboardKilled: function km_onKeyboardKilled(manifestURL) {
+    this._setKeyboardToShow(this._showingInputGroup);
+  },
+
+  _onKeyboardReady: function km_onKeyboardReady() {
+    this._showIMESwitcher();
+  },
+
+  // As user focuses some input, see if we have a specified (in inputLayouts)
+  // layout to launch for that input type group; if not, consult settings first.
+  _activateKeyboard: function km_activateKeyboard(group) {
+    // if we already have layouts for the group, no need to check default
+    if (!this.inputLayouts.layouts[group]) {
+      KeyboardHelper.checkDefaults(function changedDefaults() {
+          KeyboardHelper.getLayouts({ enabled: true },
+            this._updateLayouts.bind(this));
+          KeyboardHelper.saveToSettings();
+      }.bind(this));
+    }
+    // if there are still no keyboards to use, use text
+    if (!this.inputLayouts.layouts[group]) {
+      group = 'text';
+    }
+
+    if (this.inputLayouts.layouts[group]._activeLayoutIdx !== undefined) {
+      this._setKeyboardToShow(group);
+    } else {
+      this.inputLayouts.getGroupCurrentActiveLayoutIndexAsync(group)
+        .then(currentActiveLayoutIdx => {
+          this._setKeyboardToShow(group, currentActiveLayoutIdx);
+        })
+        .catch(e => {
+          console.error(`KeyboardManager: failed to retrieve
+                         currentActiveLayoutIdx`, e);
+          // launch keyboard anyway, just don't assign a default layout
+          this._setKeyboardToShow(group);
+        });
+    }
+  },
+
+  _inputFocusChange: function km_inputFocusChange(evt) {
+    var type = evt.detail.inputType;
+
+    // Skip the <select> element and inputs with type of date/time,
+    // handled in system app for now
+    if (!type || type in IGNORED_INPUT_TYPES) {
+      inputWindowManager.hideInputWindow();
+      return;
+    }
+
+    if ('blur' === type) {
+      this._debug('get blur event');
+      inputWindowManager.hideInputWindow();
+      this.imeSwitcher.hide();
+    } else {
+      // display the keyboard for that group decided by input type
+      // fallback to text for default if no group is found
+      var group = TYPE_GROUP_MAPPING[type];
+      this._debug('get focus event ' + type);
+      this._activateKeyboard(group);
+    }
+  },
+
+  handleEvent: function km_handleEvent(evt) {
+    switch (evt.type) {
+      case 'mozChromeEvent':
+        switch (evt.detail.type) {
+          case 'inputmethod-showall':
+            this._showImeMenu();
+            break;
+          case 'inputmethod-next':
+            this._switchToNext();
+            break;
+          case 'inputmethod-contextchange':
+            this._inputFocusChange(evt);
+            break;
         }
-
-        //XXX: The url will contain the info for keyboard height
-        keyboardHeight = parseInt(type[1]);
-
-        var updateHeight = function updateHeight() {
-          container.removeEventListener('transitionend', updateHeight);
-          if (container.classList.contains('hide')) {
-            // The keyboard has been closed already, let's not resize the
-            // application and ends up with half apps.
-            return;
-          }
-
-          var detail = {
-            'detail': {
-              'height': keyboardHeight
-            }
-          };
-
-          dispatchEvent(new CustomEvent('keyboardchange', detail));
-        };
-
-        if (container.classList.contains('hide')) {
-          container.classList.remove('hide');
-          container.addEventListener('transitionend', updateHeight);
-          return;
-        }
-
-        updateHeight();
         break;
-
-      case '#hide':
-        // inform window manager to resize app first or
-        // it may show the underlying homescreen
-        keyboardHeight = 0;
-        dispatchEvent(new CustomEvent('keyboardhide'));
-        container.classList.add('hide');
+      case 'keyboardhide':
+        this._showingInputGroup = null;
         break;
     }
-  });
+  },
 
-  function getHeight() {
-    return keyboardHeight;
-  }
+  _preloadKeyboard: function km_preloadKeyboard() {
+    if (!this.inputLayouts.layouts.text) {
+      console.warn('trying to preload \'text\' layout while it\'s unavailable');
+      return;
+    }
 
-  // For Bug 812115: hide the keyboard when the app is closed here,
-  // since it would take a longer round-trip to receive focuschange
-  // Also in Bug 856692 we realise that we need to close the keyboard
-  // when an inline activity goes away.
-  var closeKeyboardEvents = [
-    'appwillclose',
-    'activitywillclose'
-  ];
-  closeKeyboardEvents.forEach(function onEvent(eventType) {
-    window.addEventListener(eventType, function closeKeyboard() {
-      keyboardHeight = 0;
-      dispatchEvent(new CustomEvent('keyboardhide'));
-      container.classList.add('hide');
-      if (eventType == 'appwillclose') {
-        appClosing = true;
+    this._debug('preloading a keyboard');
+
+    inputWindowManager.preloadInputWindow(this.inputLayouts.layouts.text[0]);
+  },
+
+  // the generic "show an input window" function to be called by
+  // activateKeyboard, switchToNext, and IMESwitcher callbacks.
+  // if an ayout index is specified, launch to that layout. otherwise,
+  // use the layout stored in inputLayouts.
+  _setKeyboardToShow: function km_setKeyboardToShow(group, index) {
+    if (!this.inputLayouts.layouts[group]) {
+      console.warn('trying to set a layout group to show that doesnt exist');
+      return;
+    }
+
+    if (undefined === index) {
+      index = this.inputLayouts.layouts[group]._activeLayoutIdx || 0;
+    }
+    this._debug('set layout to display: group=' + group + ' index=' + index);
+    var layout = this.inputLayouts.layouts[group][index];
+
+    inputWindowManager.showInputWindow(layout);
+
+    this.inputLayouts.saveGroupsCurrentActiveLayout(layout);
+
+    this._showingInputGroup = group;
+  },
+
+  /**
+   * A half-permanent notification should display after the keyboard got
+   * activated, and only hides after the keyboard got deactivated.
+   */
+  _showIMESwitcher: function km_showIMESwitcher() {
+    var showedGroup = this._showingInputGroup;
+    if (!this.inputLayouts.layouts[showedGroup]) {
+      return;
+    }
+
+    var showedIndex = this.inputLayouts.layouts[showedGroup]._activeLayoutIdx;
+
+    // Need to make the message in spec: "FirefoxOS - English"...
+    var current = this.inputLayouts.layouts[showedGroup][showedIndex];
+
+    this.imeSwitcher.show(current.appName, current.name);
+  },
+
+  /* A small helper function for maintaining timeouts */
+  _waitForSwitchTimeout: function km_waitForSwitchTimeout(callback) {
+    clearTimeout(this._switchChangeTimeout);
+
+    this._switchChangeTimeout = setTimeout(callback, SWITCH_CHANGE_DELAY);
+  },
+
+  _switchToNext: function km_switchToNext() {
+    var showedGroup = this._showingInputGroup;
+
+    this._waitForSwitchTimeout(function keyboardSwitchLayout() {
+      if (!this.inputLayouts.layouts[showedGroup]) {
+        showedGroup = 'text';
       }
-    });
-  });
+      var showedIndex = this.inputLayouts.layouts[showedGroup]._activeLayoutIdx;
+      var length = this.inputLayouts.layouts[showedGroup].length;
+      var index = (showedIndex + 1) % length;
 
-  window.addEventListener('appclose', function appClose() {
-    appClosing = false;
-  });
+      this._setKeyboardToShow(showedGroup, index);
+    }.bind(this));
+  },
 
-  return {
-    getHeight: getHeight
-  };
+  /*
+   * Callback for ImeMenu.
+   * If selectedIndex is defined, then some item of imeMenu was selected;
+   * if it's not, then it was canceled.
+   * The showedGroup param is bind()'ed by _showImeMenu
+   * (resulting in a partial func)
+   */
+  _imeMenuCallback: function km_imeMenuCallback(showedGroup, selectedIndex) {
+    if (typeof selectedIndex === 'number') {
+      // success: show the new keyboard
+      this._setKeyboardToShow(showedGroup, selectedIndex);
 
-})();
+      // Hide the tray to show the app directly after user selected a new kb.
+      window.dispatchEvent(new CustomEvent('keyboardchanged'));
+    } else {
+      // cancel: mimic the success callback to show the current keyboard.
+      this._setKeyboardToShow(showedGroup);
 
+      // Hide the tray to show the app directly after user canceled.
+      window.dispatchEvent(new CustomEvent('keyboardchangecanceled'));
+    }
+  },
+
+  // Show the input method menu
+  _showImeMenu: function km_showImeMenu() {
+    var showedGroup = this._showingInputGroup;
+    var activeLayoutIdx =
+      this.inputLayouts.layouts[showedGroup]._activeLayoutIdx;
+    var actionMenuTitle = navigator.mozL10n.get('choose-option');
+
+    this._waitForSwitchTimeout(function listLayouts() {
+      var items = this.inputLayouts.layouts[showedGroup].map(
+        function(layout, index) {
+          return {
+            layoutName: layout.name,
+            appName: layout.appName,
+            value: index,
+            selected: (index === activeLayoutIdx)
+          };
+        });
+
+      inputWindowManager.hideInputWindow();
+
+      var menu = new ImeMenu(items, actionMenuTitle,
+        this._imeMenuCallback.bind(this, showedGroup),
+        this._imeMenuCallback.bind(this, showedGroup));
+
+      menu.start();
+
+    }.bind(this));
+  }
+};

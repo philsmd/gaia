@@ -1,29 +1,24 @@
-requireLib('models/account.js');
-requireLib('presets.js');
-requireLib('store/setting.js');
+/* global suiteTemplate */
+define(function(require) {
+'use strict';
 
-suiteGroup('Views.AdvancedSettings', function() {
+var AccountTemplate = require('templates/account');
+var AdvancedSettings = require('views/advanced_settings');
+var Factory = require('test/support/factory');
 
+require('dom!advanced_settings');
+
+suite('Views.AdvancedSettings', function() {
   var subject;
   var template;
   var app;
   var accountStore;
   var fixtures;
   var settings;
-  var tries;
   var triggerEvent;
 
   suiteSetup(function() {
     triggerEvent = testSupport.calendar.triggerEvent;
-  });
-
-  [
-    'Provider.Caldav',
-    'Provider.Local'
-  ].forEach(function(klass) {
-    suiteSetup(function(done) {
-      Calendar.App.loadObject(klass, done);
-    });
   });
 
   setup(function() {
@@ -52,41 +47,17 @@ suiteGroup('Views.AdvancedSettings', function() {
     );
   }
 
-  teardown(function() {
-    var el = document.getElementById('test');
-    el.parentNode.removeChild(el);
+  var db;
+  suiteTemplate('advanced-settings', {
+    id: 'advanced-settings-view'
   });
 
-  var db;
   setup(function(done) {
-    var div = document.createElement('div');
-    div.id = 'test';
-    div.innerHTML = [
-      '<div id="advanced-settings-view">',
-        '<header class="account-list-header">',
-          '<h2 data-l10n-id="account-list-header">Accounts</h2>',
-        '</header>',
-        '<ul class="account-list"></ul>',
-      '</div>',
-      '<select name="syncFrequency" id="setting-sync-frequency">',
-        '<option value="null">null</option>',
-        '<option value="15">15</option>',
-        '<option value="30">30</option>',
-        '<option selected value="60">60</option>',
-      '</select>',
-      '<div id="default-event-alarm"><span class="button"></span></div>',
-      '<div id="default-allday-alarm"><span class="button"></span></div>'
-    ].join('');
-
-    document.body.appendChild(div);
-
     app = testSupport.calendar.app();
     db = app.db;
 
-    template = Calendar.Templates.Account;
-    subject = new Calendar.Views.AdvancedSettings({
-      app: app
-    });
+    template = AccountTemplate;
+    subject = new AdvancedSettings({ app: app });
 
     accountStore = app.store('Account');
     settings = app.store('Setting');
@@ -170,7 +141,7 @@ suiteGroup('Views.AdvancedSettings', function() {
           providerType: 'Local'
         }));
 
-        assert.length(children, 1, 'does not add account');
+        assert.lengthOf(children, 1, 'does not add account');
       });
     });
 
@@ -200,7 +171,7 @@ suiteGroup('Views.AdvancedSettings', function() {
         assert.equal(children.length, 2);
 
         // remove the old one
-        accountStore.emit('remove', object._id);
+        accountStore.emit('preRemove', object._id);
 
         assert.equal(children.length, 1);
 
@@ -342,18 +313,17 @@ suiteGroup('Views.AdvancedSettings', function() {
     });
 
     test('alarms set to stored value', function() {
-      var element = subject.standardAlarm;
       assert.equal(
-        element.value, expectedEventAlarm,
+        subject.standardAlarm.value, expectedEventAlarm,
         'event alarm set to stored value'
       );
 
-      var element = subject.alldayAlarm;
       assert.equal(
-        element.value, expectedAllDayAlarm,
+        subject.alldayAlarm.value, expectedAllDayAlarm,
         'event alarm set to stored value'
       );
     });
   });
+});
 
 });

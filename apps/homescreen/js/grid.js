@@ -1,35 +1,60 @@
 'use strict';
 
 var GridManager = (function() {
-  var MAX_ICONS_PER_PAGE = 4 * 4;
-  var PREFERRED_ICON_SIZE = 60;
-  var SAVE_STATE_TIMEOUT = 100;
-  var BASE_WIDTH = 320;
-  var BASE_HEIGHT = 480;
-  var DEVICE_HEIGHT = window.innerHeight;
-  var SCALE_RATIO = window.innerWidth / BASE_WIDTH;
-  var AVAILABLE_SPACE = DEVICE_HEIGHT - (BASE_HEIGHT * SCALE_RATIO);
+  // Be aware that the current manifest icon description syntax does
+  // not distinguish between 60@1.5x and 90@1x, so we would have to use
+  // the latter as the former.
 
-  // Check if there is space for another row of icons
-  if (AVAILABLE_SPACE > BASE_HEIGHT / 5) {
-    var MAX_ICONS_PER_PAGE = 4 * 5;
+  // use 100px icons for tablet
+  var notTinyLayout = !ScreenLayout.getCurrentLayout('tiny');
+  var PREFERRED_ICON_SIZE =
+      (notTinyLayout ? 90 : 60) * (window.devicePixelRatio || 1);
+
+  var SAVE_STATE_TIMEOUT = 100;
+  var BASE_HEIGHT = 460; // 480 - 20 (status bar height)
+
+  var HIDDEN_ROLES = [
+    'system', 'input', 'homescreen', 'theme', 'addon', 'langpack'
+  ];
+
+  // Store the pending apps to be installed until SingleVariant conf is loaded
+  var pendingInstallRequests = [];
+
+  function isHiddenApp(role) {
+    if (!role) {
+      return false;
+    }
+    return (HIDDEN_ROLES.indexOf(role) !== -1);
   }
+
+  // Holds the list of single variant apps that have been installed
+  // previously already
+  var svPreviouslyInstalledApps = [];
+
+  // XXX bug 911696 filter out launch_path
+  var launchPathBlacklist = [];
 
   var container;
 
-  var windowWidth = window.innerWidth;
+  // This value is used in order to keep the layers onscreen when they are
+  // moved on a panel changes. This prevent the layers to be destroyed and
+  // recreated on the next move.
+  function getWindowWidthMinusOne() {
+    return ScreenHelper.width - 0.001;
+  }
+
   var swipeThreshold, swipeFriction, tapThreshold;
 
   var dragging = false;
 
   var defaultAppIcon, defaultBookmarkIcon;
 
-  var opacityOnAppGridPageMax = .7;
-  var kPageTransitionDuration, overlayTransition, overlay, overlayStyle;
+  var kPageTransitionDuration;
 
-  var numberOfSpecialPages = 0, landingPage, prevLandingPage, nextLandingPage;
+  var kPageMinTransitionDuration = 100;
+
   var pages = [];
-  var currentPage = 1;
+  var currentPage = 0;
 
   var saveStateTimeout = null;
 
@@ -38,6 +63,39 @@ var GridManager = (function() {
     left: 0,
     right: 0
   };
+
+  var EVME_PAGE_STATE_INDEX = 1;
+
+  var MAX_ICONS_PER_PAGE = 4 * 4;
+
+  // Check if there is space for another row of icons
+  // For WVGA, 800x480, we also want to show 4 x 5 grid on homescreen
+  // the homescreen size would be 770 x 480, and 770/480 ~= 1.6
+  if (ScreenHelper.height - BASE_HEIGHT > BASE_HEIGHT / 5 ||
+      ScreenHelper.height / ScreenHelper.width >= 1.6) {
+    MAX_ICONS_PER_PAGE += 4;
+  }
+
+  // tablet+ devices are stricted to 6 x 3 grid
+  if (notTinyLayout) {
+    MAX_ICONS_PER_PAGE = 6 * 3;
+  }
+
+  // The same number of icons by default
+  var MAX_ICONS_PER_EVME_PAGE = MAX_ICONS_PER_PAGE;
+
+  function setMaxIconsToSearchPage() {
+    if (!document.body.classList.contains('searchPageEnabled')) {
+      return;
+    }
+
+    // One row is consumed by the search bar
+    MAX_ICONS_PER_EVME_PAGE -= 4;
+
+    if (notTinyLayout) {
+      MAX_ICONS_PER_EVME_PAGE -= 6;
+    }
+  }
 
   var startEvent, isPanning = false, startX, currentX, deltaX, removePanHandler,
       noop = function() {};
@@ -64,6 +122,11 @@ var GridManager = (function() {
     var lookahead, lastPrediction, x0, t0, x1, t1 = 0, dx, velocity;
 
     function calculateVelocity(evt) {
+      if (t1 === evt.timeStamp) {
+        // We already calculated a velocity for this timestamp, reuse it.
+        return;
+      }
+
       if (t1 < touchStartTimestamp) {
         // If this is the first move of this series, use the start event
         x0 = startX;
@@ -105,6 +168,7 @@ var GridManager = (function() {
         var prediction = Math.round(x1 + adjustment - startX);
 
         // Make sure we don't return a prediction greater than the screen width
+        var windowWidth = ScreenHelper.width;
         if (prediction >= windowWidth) {
           prediction = windowWidth - 1;
         }
@@ -154,24 +218,16 @@ var GridManager = (function() {
     };
   }
 
-  function addActive(target) {
-    if ('isIcon' in target.dataset) {
-      target.classList.add('active');
-      removeActive = function _removeActive() {
-        target.classList.remove('active');
-        removeActive = noop;
-      };
-    } else {
-      removeActive = noop;
-    }
+  function tap(element) {
+    releaseEvents();
+    IconManager.cancelActive();
+    pageHelper.getCurrent().tap(element, IconManager.removeActive);
   }
-
-  var removeActive = noop;
 
   function handleEvent(evt) {
     switch (evt.type) {
       case touchstart:
-        if (currentPage || numberOfSpecialPages === 1)
+        if (currentPage)
           evt.stopPropagation();
         touchStartTimestamp = evt.timeStamp;
         startEvent = isTouch ? evt.touches[0] : evt;
@@ -179,7 +235,7 @@ var GridManager = (function() {
         attachEvents();
         removePanHandler = noop;
         isPanning = false;
-        addActive(evt.target);
+        IconManager.addActive(evt.target);
         panningResolver.reset();
         break;
 
@@ -192,9 +248,8 @@ var GridManager = (function() {
         // the tap when we've moved far enough.
         startX = startEvent.pageX;
         currentX = getX(evt);
-        deltaX = panningResolver.getDeltaX(evt);
 
-        if (deltaX === 0)
+        if (currentX === startX)
           return;
 
         document.body.dataset.transitioning = 'true';
@@ -209,126 +264,85 @@ var GridManager = (function() {
         var forward = deltaX < 0;
 
         // Since we're panning, the icon we're over shouldn't be active
-        removeActive();
+        IconManager.removeActive();
 
         var refresh;
 
+        var previous, next, pan;
+        var windowWidthMinusOne = getWindowWidthMinusOne();
         if (currentPage === 0) {
-          var next = pages[currentPage + 1].container.style;
+          next = pages[currentPage + 1].container.style;
           refresh = function(e) {
             if (deltaX <= 0) {
-              next.MozTransform =
-                'translateX(' + (windowWidth + deltaX) + 'px)';
-              current.MozTransform = 'translateX(' + deltaX + 'px)';
+              next.transform =
+                'translateX(' + (windowWidthMinusOne + deltaX) + 'px)';
+              current.transform = 'translateX(' + deltaX + 'px)';
             } else {
               startX = currentX;
             }
           };
         } else if (currentPage === pages.length - 1) {
-          var previous = pages[currentPage - 1].container.style;
+          previous = pages[currentPage - 1].container.style;
           refresh = function(e) {
             if (deltaX >= 0) {
-              previous.MozTransform =
-                'translateX(' + (-windowWidth + deltaX) + 'px)';
-              current.MozTransform = 'translateX(' + deltaX + 'px)';
+              previous.transform =
+                'translateX(' + (-windowWidthMinusOne + deltaX) + 'px)';
+              current.transform = 'translateX(' + deltaX + 'px)';
             } else {
               startX = currentX;
             }
           };
         } else {
-          var previous = pages[currentPage - 1].container.style;
-          var next = pages[currentPage + 1].container.style;
+          previous = pages[currentPage - 1].container.style;
+          next = pages[currentPage + 1].container.style;
           refresh = function(e) {
             if (deltaX >= 0) {
-              previous.MozTransform =
-                'translateX(' + (-windowWidth + deltaX) + 'px)';
+              previous.transform =
+                'translateX(' + (-windowWidthMinusOne + deltaX) + 'px)';
 
               // If we change direction make sure there isn't any part
               // of the page on the other side that stays visible.
               if (forward) {
                 forward = false;
-                next.MozTransform = 'translateX(' + windowWidth + 'px)';
+                next.transform = 'translateX(' + windowWidthMinusOne + 'px)';
               }
             } else {
-              next.MozTransform =
-                'translateX(' + (windowWidth + deltaX) + 'px)';
+              next.transform =
+                'translateX(' + (windowWidthMinusOne + deltaX) + 'px)';
 
               // If we change direction make sure there isn't any part
               // of the page on the other side that stays visible.
               if (!forward) {
                 forward = true;
-                previous.MozTransform = 'translateX(-' + windowWidth + 'px)';
+                previous.transform =
+                  'translateX(-' + windowWidthMinusOne + 'px)';
               }
             }
 
-            current.MozTransform = 'translateX(' + deltaX + 'px)';
+            current.transform = 'translateX(' + deltaX + 'px)';
           };
         }
 
-        // We should move the pages with the first touchmove event
-        window.mozRequestAnimationFrame(refresh);
+        pan = function(e) {
+          e.preventDefault();
+          e.stopImmediatePropagation();
 
-        // Generate a function accordingly to the current page position.
-        if (currentPage > nextLandingPage || Homescreen.isInEditMode()) {
-          var pan = function(e) {
-            currentX = getX(e);
-            deltaX = panningResolver.getDeltaX(e);
+          currentX = getX(e);
+          deltaX = panningResolver.getDeltaX(e);
 
-            if (!isPanning && Math.abs(deltaX) >= tapThreshold) {
-              isPanning = true;
-            }
-            window.mozRequestAnimationFrame(refresh);
-          };
-        } else {
-          var setOpacityToOverlay = noop;
-          if (currentPage === prevLandingPage) {
-            setOpacityToOverlay = function() {
-              if (!forward)
-                return;
-
-              var opacity = opacityOnAppGridPageMax -
-                    (Math.abs(deltaX) / windowWidth) * opacityOnAppGridPageMax;
-              overlayStyle.opacity = Math.round(opacity * 10) / 10;
-            };
-          } else if (currentPage === landingPage) {
-            setOpacityToOverlay = function() {
-              var opacity = (Math.abs(deltaX) / windowWidth) *
-                            opacityOnAppGridPageMax;
-              overlayStyle.opacity = Math.round(opacity * 10) / 10;
-            };
-          } else {
-            setOpacityToOverlay = function() {
-              if (forward)
-                return;
-
-              var opacity = opacityOnAppGridPageMax -
-                    (Math.abs(deltaX) / windowWidth) * opacityOnAppGridPageMax;
-              overlayStyle.opacity = Math.round(opacity * 10) / 10;
-            };
+          if (!isPanning && Math.abs(deltaX) >= tapThreshold) {
+            isPanning = true;
           }
+          window.mozRequestAnimationFrame(refresh);
+        };
 
-          var pan = function(e) {
-            currentX = getX(e);
-            deltaX = panningResolver.getDeltaX(e);
-
-            if (!isPanning && Math.abs(deltaX) >= tapThreshold) {
-              isPanning = true;
-            }
-            window.mozRequestAnimationFrame(function() {
-              refresh();
-              setOpacityToOverlay();
-            });
-          };
-        }
-
-        var container = pages[currentPage].container;
-        container.addEventListener(touchmove, pan, true);
+        window.addEventListener(touchmove, pan, true);
 
         removePanHandler = function removePanHandler(e) {
-          touchEndTimestamp = e ? e.timeStamp : Number.MAX_VALUE;
+          touchEndTimestamp = e ? e.timeStamp : 0;
           window.removeEventListener(touchend, removePanHandler, true);
 
-          container.removeEventListener(touchmove, pan, true);
+          window.removeEventListener(touchmove, pan, true);
 
           window.mozRequestAnimationFrame(function panTouchEnd() {
             onTouchEnd(deltaX, e);
@@ -338,38 +352,50 @@ var GridManager = (function() {
         window.addEventListener(touchend, removePanHandler, true);
         window.removeEventListener(touchend, handleEvent);
 
+        // immediately start to pan
+        pan(evt);
+
         break;
 
       case touchend:
-        releaseEvents();
-        pageHelper.getCurrent().tap(evt.target);
-        removeActive();
+        tap(evt.target);
+
         break;
 
-      case 'contextmenu':
-        if (isPanning) {
-          evt.stopImmediatePropagation();
-          return;
+      case 'wheel':
+        if (evt.deltaMode === evt.DOM_DELTA_PAGE && evt.deltaX) {
+          // XXX: Scroll one page at a time
+          if (evt.deltaX > 0 && currentPage < pages.length - 1) {
+            GridManager.goToNextPage();
+          } else if (evt.deltaX < 0 && currentPage > 0) {
+            GridManager.goToPreviousPage();
+          }
+          evt.stopPropagation();
+          evt.preventDefault();
         }
-
-        if (currentPage > landingPage && 'isIcon' in evt.target.dataset) {
-          evt.stopImmediatePropagation();
-          removePanHandler();
-          Homescreen.setMode('edit');
-          removeActive();
-          DragDropManager.start(evt, {
-            'x': startEvent.pageX,
-            'y': startEvent.pageY
-          });
-        }
-
         break;
     }
   }
 
-  function applyEffectOverlay(index) {
-    overlayStyle.MozTransition = overlayTransition;
-    overlayStyle.opacity = index === landingPage ? 0 : opacityOnAppGridPageMax;
+  function contextmenu(evt) {
+    if (isPanning) {
+      return;
+    }
+
+    removePanHandler();
+    Homescreen.setMode('edit');
+    IconManager.removeActive();
+    LazyLoader.load(['style/dragdrop.css', 'js/dragdrop.js'], function() {
+      DragDropManager.init();
+      DragDropManager.start(evt, {
+        'x': startEvent.pageX,
+        'y': startEvent.pageY
+      });
+    });
+  }
+
+  function cancelPanning() {
+    removePanHandler();
   }
 
   function onTouchEnd(deltaX, evt) {
@@ -377,20 +403,19 @@ var GridManager = (function() {
 
     var velocity = panningResolver.getVelocity();
     var distanceToTravel = 0.5 * Math.abs(velocity) * velocity / swipeFriction;
-    // If the actual distance plus the coast distance is more than 40% the
+    // If the actual distance plus the coast distance is more than 25% the
     // screen, transition to the next page
-    if (Math.abs(deltaX + distanceToTravel) > swipeThreshold) {
+    if (Math.abs(deltaX + distanceToTravel) > swipeThreshold ||
+       (Math.abs(deltaX) > tapThreshold &&
+           touchEndTimestamp - touchStartTimestamp < kPageTransitionDuration)) {
       var forward = dirCtrl.goesForward(deltaX);
       if (forward && currentPage < pages.length - 1) {
         page = page + 1;
-      } else if (!forward && page > 0 &&
-                 (page === landingPage || page >= nextLandingPage + 1 ||
-                    (page === nextLandingPage && !Homescreen.isInEditMode()))) {
+      } else if (!forward && page > 0) {
         page = page - 1;
       }
     } else if (!isPanning && evt) {
-      releaseEvents();
-      pageHelper.getCurrent().tap(evt.target);
+      tap(evt.target);
     }
 
     goToPage(page);
@@ -422,29 +447,8 @@ var GridManager = (function() {
     saveStateTimeout = window.setTimeout(function saveStateTrigger() {
       saveStateTimeout = null;
       pageHelper.saveAll();
+      HomeState.saveSVInstalledApps(GridManager.svPreviouslyInstalledApps);
     }, SAVE_STATE_TIMEOUT);
-  }
-
-  function togglePagesVisibility(start, end) {
-    for (var i = 0; i < pages.length; i++) {
-      var pagediv = pages[i].container;
-      if (i < start || i > end) {
-        pagediv.style.display = 'none';
-      } else {
-        pagediv.style.display = 'block';
-      }
-    }
-  }
-
-  var captureHashchange = false;
-
-  function hashchange(evt) {
-    if (!captureHashchange) {
-      return;
-    }
-
-    captureHashchange = false;
-    evt.stopImmediatePropagation();
   }
 
   function goToPageCallback(index, fromPage, toPage, dispatchEvents, callback) {
@@ -455,28 +459,28 @@ var GridManager = (function() {
       toPage.container.dispatchEvent(new CustomEvent('gridpageshowend'));
     }
 
-    overlayStyle.MozTransition = '';
-
     // We are going to prepare pages that are next to current page
     // for panning.
+    var windowWidthMinusOne = getWindowWidthMinusOne();
 
     if (index) {
       var previous = pages[index - 1].container.style;
-      previous.MozTransition = '';
-      previous.MozTransform = 'translateX(-' + windowWidth + 'px)';
+      previous.transition = '';
+      previous.transform = 'translateX(-' + windowWidthMinusOne + 'px)';
     }
 
     if (index < pages.length - 1) {
       var next = pages[index + 1].container.style;
-      next.MozTransition = '';
-      next.MozTransform = 'translateX(' + windowWidth + 'px)';
+      next.transition = '';
+      next.transform = 'translateX(' + windowWidthMinusOne + 'px)';
     }
 
     var current = toPage.container.style;
-    current.MozTransition = '';
-    current.MozTransform = 'translateX(0)';
+    current.transition = '';
+    current.transform = 'translateX(0)';
 
-    togglePagesVisibility(index - 1, index + 1);
+    fromPage.container.setAttribute('aria-hidden', true);
+    toPage.container.removeAttribute('aria-hidden');
 
     if (callback) {
       setTimeout(callback, 0);
@@ -491,19 +495,26 @@ var GridManager = (function() {
     if (index < 0 || index >= pages.length)
       return;
 
-    if (index === landingPage) {
-      // Homescreen won't call to this method due to stop the propagation
-      captureHashchange = true;
-      document.location.hash = 'root';
-    } else {
-      document.location.hash = '';
-    }
-
+    touchEndTimestamp = touchEndTimestamp || lastGoingPageTimestamp;
     var delay = touchEndTimestamp - lastGoingPageTimestamp ||
                 kPageTransitionDuration;
+
+    // Fetch the user's swiping velocity, but make sure it's more
+    // than 1 so when we factor this with the duration, we don't
+    // end up with a slower swipe
+    var velocity = Math.max(1, Math.abs(panningResolver.getVelocity() || 0));
+
     lastGoingPageTimestamp += delay;
-    var duration = delay < kPageTransitionDuration ?
-                   delay : kPageTransitionDuration;
+
+    // Bug 979396:
+    // For the non-velocity-factored duration, use either the computed
+    // delay or the configured duration, whichever is smaller. Once
+    // velocity is factored in, don't allow the transition to be
+    // quicker than kPageMinTransitionDuration
+    var duration = Math.max(
+      Math.min(delay, kPageTransitionDuration) / velocity,
+      kPageMinTransitionDuration
+    );
 
     var previousPage = pages[currentPage];
     var newPage = pages[index];
@@ -517,22 +528,24 @@ var GridManager = (function() {
       var start = index;
       var end = currentPage;
     }
-    applyEffectOverlay(index);
 
     currentPage = index;
     updatePaginationBar();
+    var windowWidthMinusOne = getWindowWidthMinusOne();
 
     if (previousPage === newPage) {
-      if (newPage.container.getBoundingClientRect().left !== 0) {
+      // Has the page been translated?
+      if (currentX - startX) {
+        currentX = startX = 0;
         // Pages are translated in X
         if (index > 0) {
-          pages[index - 1].moveByWithEffect(-windowWidth, duration);
+          pages[index - 1].moveByWithEffect(-windowWidthMinusOne, duration);
         }
 
         newPage.moveByWithEffect(0, duration);
 
         if (index < pages.length - 1) {
-          pages[index + 1].moveByWithEffect(windowWidth, duration);
+          pages[index + 1].moveByWithEffect(windowWidthMinusOne, duration);
         }
 
         container.addEventListener('transitionend', function transitionEnd(e) {
@@ -547,17 +560,20 @@ var GridManager = (function() {
       return;
     }
 
-    togglePagesVisibility(start, end);
-
     previousPage.container.dispatchEvent(new CustomEvent('gridpagehidestart'));
     newPage.container.dispatchEvent(new CustomEvent('gridpageshowstart'));
-    previousPage.moveByWithEffect(-forward * windowWidth, duration);
+    previousPage.moveByWithEffect(-forward * windowWidthMinusOne, duration);
     newPage.moveByWithEffect(0, duration);
 
     container.addEventListener('transitionend', function transitionEnd(e) {
       container.removeEventListener('transitionend', transitionEnd);
       goToPageCallback(index, previousPage, newPage, true, callback);
     });
+  }
+
+  function goToLandingPage() {
+    document.body.dataset.transitioning = 'true';
+    goToPage(0);
   }
 
   function goToNextPage(callback) {
@@ -572,6 +588,14 @@ var GridManager = (function() {
 
   function updatePaginationBar() {
     PaginationBar.update(currentPage, pages.length);
+  }
+
+  function updatePageSetSize() {
+    for (var i in pages) {
+      var container = pages[i].container;
+      container.setAttribute('aria-setsize', pages.length);
+      container.setAttribute('aria-posinset', Number(i) + 1);
+    }
   }
 
   /*
@@ -615,10 +639,11 @@ var GridManager = (function() {
     haveLocale = true;
   }
 
-  function getFirstPageWithEmptySpace() {
-    for (var i = numberOfSpecialPages; i < pages.length; i++) {
-      if (pages[i].getNumIcons() < MAX_ICONS_PER_PAGE) {
-        return i;
+  function getFirstPageWithEmptySpace(pageOffset) {
+    pageOffset = pageOffset !== null && pageOffset ? pageOffset : 0;
+    for (var i = pageOffset, page; page = pages[i++];) {
+      if (page.hasEmptySlot()) {
+        return i - 1;
       }
     }
     return pages.length;
@@ -629,7 +654,7 @@ var GridManager = (function() {
 
     pages.forEach(function checkIsEmpty(page, index) {
       // ignore the landing page
-      if (index < numberOfSpecialPages) {
+      if (index === 0) {
         return;
       }
 
@@ -645,29 +670,46 @@ var GridManager = (function() {
       goToPage(currentPage);
   }
 
+  function pageOverflowed(page) {
+    return page.getNumIcons() > page.maxIcons;
+  }
+
   /*
    * Checks number of apps per page
    *
    * It propagates icons in order to avoiding overflow in
    * pages with a number of apps greater that the maximum
    */
-  function ensurePagesOverflow() {
-    pages.forEach(function checkIsOverflow(page, index) {
-      // ignore the landing page
-      if (index < numberOfSpecialPages) {
-        return;
-      }
+  function ensurePagesOverflow(callback) {
+    ensurePageOverflow(0, callback);
+  }
 
-      // if the page is not full
-      while (page.getNumIcons() > MAX_ICONS_PER_PAGE) {
-        var propagateIco = page.popIcon();
-        if (index === pages.length - 1) {
-          pageHelper.addPage([propagateIco]); // new page
-        } else {
-          pages[index + 1].prependIcon(propagateIco); // next page
-        }
-      }
-    });
+  function ensurePageOverflow(index, callback) {
+    var page = pages[index];
+    if (!page) {
+      callback();
+      return; // There are not more pages
+    }
+
+    if (!pageOverflowed(page)) {
+      ensurePageOverflow(index + 1, callback);
+      return;
+    }
+
+    var propagateIco = page.popIcon();
+    if (index === pages.length - 1) {
+      propagateIco.loadRenderedIcon(function loaded(url) {
+        pageHelper.addPage([propagateIco]); // new page
+        window.URL.revokeObjectURL(url);
+        ensurePageOverflow(pageOverflowed(page) ? index : index + 1, callback);
+      });
+    } else {
+      propagateIco.loadRenderedIcon(function loaded(url) {
+        pages[index + 1].prependIcon(propagateIco); // next page
+        window.URL.revokeObjectURL(url);
+        ensurePageOverflow(pageOverflowed(page) ? index : index + 1, callback);
+      });
+    }
   }
 
   var pageHelper = {
@@ -680,12 +722,14 @@ var GridManager = (function() {
      * @param {Array} icons
      *                List of Icon objects.
      */
-    addPage: function(icons) {
+    addPage: function(icons, numberOficons) {
       var pageElement = document.createElement('div');
-      var page = new Page(pageElement, icons);
+      var page = new Page(pageElement, icons, numberOficons ||
+                          MAX_ICONS_PER_PAGE);
       pages.push(page);
 
       pageElement.className = 'page';
+      pageElement.setAttribute('role', 'region');
       container.appendChild(pageElement);
 
       // If the new page is situated right after the current displayed page,
@@ -695,6 +739,7 @@ var GridManager = (function() {
       }
 
       updatePaginationBar();
+      updatePageSetSize();
     },
 
     /*
@@ -706,17 +751,21 @@ var GridManager = (function() {
       pages[index].destroy(); // Destroy page
       pages.splice(index, 1); // Removes page from the list
       updatePaginationBar();
+      updatePageSetSize();
     },
 
     /*
      * Saves all pages state on the database
      */
     saveAll: function() {
-      var state = pages.slice(numberOfSpecialPages);
+      var state = pages.slice(0);
       state.unshift(DockManager.page);
       for (var i = 0; i < state.length; i++) {
         var page = state[i];
-        state[i] = {index: i, icons: page.getIconDescriptors()};
+        state[i] = {
+          index: i,
+          icons: page.getIconDescriptors()
+        };
       }
       HomeState.saveGrid(state);
     },
@@ -741,6 +790,10 @@ var GridManager = (function() {
       return currentPage;
     },
 
+    getPage: function(index) {
+      return pages[index];
+    },
+
     /*
      * Returns the total number of pages
      */
@@ -761,8 +814,8 @@ var GridManager = (function() {
   var appIcons;
   // Map 'origin' -> app object.
   var appsByOrigin;
-  // Map 'origin' for bookmarks -> bookmark object.
-  var bookmarksByOrigin;
+  // Map 'id' for bookmarks -> bookmark object.
+  var bookmarksById;
 
   function rememberIcon(icon) {
     var descriptor = icon.descriptor;
@@ -798,6 +851,11 @@ var GridManager = (function() {
     return iconsForApp && iconsForApp[descriptor.entry_point || ''];
   }
 
+  function getIconByOrigin(origin, entryPoint) {
+    var app = appsByOrigin[origin];
+    return app ? getIcon(buildDescriptor(app, entryPoint)) : undefined;
+  }
+
   function getIconsForApp(app) {
     return appIcons[app.manifestURL];
   }
@@ -806,19 +864,60 @@ var GridManager = (function() {
     return bookmarkIcons[bookmarkURL];
   }
 
-  // Ways to enumerate installed apps & bookmarks and find out whether
-  // a certain "origin" is available as an existing installed app or
-  // bookmark. Only used by Everything.me at this point.
-  function getApps() {
+  /**
+   * Ways to enumerate installed apps & bookmarks and find
+   * out whether a certain "origin" is available as an existing installed app or
+   * bookmark. Only used by Everything.me at this point.
+   * @param {Boolean} expands manifests with multiple entry points.
+   * @param {Boolean} disallows hidden apps.
+   * @return {Array} icon objects.
+   */
+  function getApps(expandApps, suppressHiddenRoles) {
     var apps = [];
     for (var origin in appsByOrigin) {
-      apps.push(appsByOrigin[origin]);
+      var app = appsByOrigin[origin];
+
+      // app.manifest is null until the downloadsuccess/downloadapplied event
+      var manifest = app.manifest || app.updateManifest;
+
+      if (!manifest || app.type === GridItemsFactory.TYPE.COLLECTION ||
+          (suppressHiddenRoles && isHiddenApp(manifest.role))) {
+        continue;
+      }
+
+      if (expandApps && manifest.entry_points) {
+        var entryPoints = manifest.entry_points;
+        for (var entryPoint in entryPoints) {
+          if (!entryPoints[entryPoint].icons) {
+            continue;
+          }
+          apps.push(new Icon(buildDescriptor(app, entryPoint), app));
+        }
+        continue;
+      }
+
+      apps.push(new Icon(buildDescriptor(app), app));
     }
     return apps;
   }
 
-  function getAppByOrigin(url) {
-    return appsByOrigin[url];
+  function getApp(origin) {
+    var app = appsByOrigin[origin] || bookmarkIcons[origin].app;
+    if (app) {
+      return new Icon(buildDescriptor(app), app);
+    }
+    return null;
+  }
+
+  function getCollections() {
+    var apps = [], app;
+    for (var origin in appsByOrigin) {
+      app = appsByOrigin[origin];
+      if (app.type === GridItemsFactory.TYPE.COLLECTION) {
+        apps.push(app);
+      }
+    }
+    return apps;
   }
 
 
@@ -826,11 +925,8 @@ var GridManager = (function() {
    * Initialize the UI.
    */
   function initUI(selector) {
-    overlay = document.querySelector('#landing-overlay');
-    overlayStyle = overlay.style;
-
     container = document.querySelector(selector);
-    container.addEventListener('contextmenu', handleEvent);
+    container.addEventListener('wheel', handleEvent);
     ensurePanning();
 
     limits.left = container.offsetWidth * 0.05;
@@ -842,10 +938,6 @@ var GridManager = (function() {
     // not backed by the app database. Note that this creates an
     // offset between these indexes here and the ones in the DB.
     // See also pageHelper.saveAll().
-    numberOfSpecialPages = container.children.length;
-    landingPage = numberOfSpecialPages - 1;
-    prevLandingPage = landingPage - 1;
-    nextLandingPage = landingPage + 1;
     for (var i = 0; i < container.children.length; i++) {
       var pageElement = container.children[i];
       var page = new Page(pageElement, null);
@@ -855,16 +947,106 @@ var GridManager = (function() {
     panningResolver = createPanningResolver();
   }
 
+  function addSVEventListener() {
+    window.addEventListener('singlevariant-ready', function svFileReady(ev) {
+      window.removeEventListener('singlevariant-ready', svFileReady);
+      pendingInstallRequests.forEach(GridManager.install);
+    });
+  }
+
+  function processBookmarks(done) {
+    BookmarksManager.getHomescreenRevisionId(function(homescreenRevisionId) {
+      if (!homescreenRevisionId) {
+        // We have to populate the datastore with bookmarks already installed.
+        // Just the first time after updating the device from 1.4 to 2.0 version
+        var bookmarks = Object.keys(bookmarksById);
+        var numberBookmarks = bookmarks.length;
+        if (numberBookmarks === 0) {
+          // No bookmarks to migrate to the datastore. Basically it means that
+          // user had no bookmarks in 1.4 or it is a new device 2.0
+          mergeBookmarks(done);
+          return;
+        }
+
+        var onProccessed = function() {
+          if (--numberBookmarks === 0) {
+            mergeBookmarks(done);
+          }
+        };
+
+        // At this point we are going to propagate our bookmarks to system
+        bookmarks.forEach(function(id) {
+          BookmarksDatabase.add(bookmarksById[id].getDescriptor()).
+                            then(onProccessed, onProccessed);
+        });
+      } else {
+        BookmarksDatabase.getRevisionId().then(function(systemRevisionId) {
+          if (homescreenRevisionId !== systemRevisionId) {
+            // Not synchronized (bookmarks added/modified/deleted while it was
+            // not running)
+            mergeBookmarks(done);
+          } else {
+            // Same revision in system and home, nothing to do here...
+            done();
+          }
+        }, done);
+      }
+    });
+  }
+
+  function mergeBookmarks(done) {
+    BookmarksDatabase.getAll().then(function(systemBookmarks) {
+      // We are going to iterate over system bookmarks
+      Object.keys(systemBookmarks).forEach(function(id) {
+        if (bookmarksById[id]) {
+          // Deleting from the list because it should not be removed from grid
+          delete bookmarksById[id];
+        }
+        // Adding or updating bookmark
+        processApp(new Bookmark(systemBookmarks[id]));
+      });
+
+      // Deleting bookmarks that are not stored in the datastore. The
+      // homescreen won't show bookmarks that are not in the system
+      Object.keys(bookmarksById).forEach(function(id) {
+        var icon = getIconForBookmark(bookmarksById[id].bookmarkURL);
+        if (icon) {
+          icon.remove();
+          markDirtyState();
+        }
+      });
+
+      done();
+    }, done);
+  }
+
   /*
    * Initialize the mozApps event handlers and synchronize our grid
    * state with the applications known to the system.
    */
-  function initApps(apps) {
+  function initApps(callback) {
     var appMgr = navigator.mozApps.mgmt;
 
+    if (!appMgr) {
+      setTimeout(callback);
+      return;
+    }
+
+    processBookmarks(function done() {
+      BookmarksManager.updateHomescreenRevisionId();
+      BookmarksManager.attachListeners();
+      bookmarksById = null;
+      ensurePagesOverflow(removeEmptyPages);
+    });
+
     appMgr.oninstall = function oninstall(event) {
-     GridManager.install(event.application);
+      if (Configurator.isSingleVariantReady) {
+        GridManager.install(event.application);
+      } else {
+        pendingInstallRequests.push(event.application);
+      }
     };
+
     appMgr.onuninstall = function onuninstall(event) {
       GridManager.uninstall(event.application);
     };
@@ -884,25 +1066,23 @@ var GridManager = (function() {
       var apps = event.target.result;
       apps.forEach(function eachApp(app) {
         delete iconsByManifestURL[app.manifestURL];
-        processApp(app);
+        processApp(app, null, EVME_PAGE_STATE_INDEX);
       });
-
-      for (var origin in bookmarksByOrigin) {
-        appsByOrigin[origin] = bookmarksByOrigin[origin];
-      }
-      bookmarksByOrigin = null;
 
       for (var manifestURL in iconsByManifestURL) {
         var iconsForApp = iconsByManifestURL[manifestURL];
         for (var entryPoint in iconsForApp) {
           var icon = iconsForApp[entryPoint];
-          icon.remove();
-          markDirtyState();
+          if (icon) {
+            icon.remove();
+            markDirtyState();
+          }
         }
       }
 
-      ensurePagesOverflow();
-      removeEmptyPages();
+      ensurePagesOverflow(removeEmptyPages);
+
+      callback();
     };
   }
 
@@ -916,9 +1096,28 @@ var GridManager = (function() {
       // navigator.mozApps backed app will objects will be handled
       // asynchronously and therefore at a later time.
       var app = null;
-      if (descriptor.bookmarkURL) {
-        app = new Bookmark(descriptor);
-        bookmarksByOrigin[app.origin] = app;
+      if (descriptor.bookmarkURL && !descriptor.type) {
+        // pre-1.3 bookmarks
+        descriptor.type = GridItemsFactory.TYPE.BOOKMARK;
+      }
+
+      if (descriptor.type === GridItemsFactory.TYPE.BOOKMARK ||
+          descriptor.type === GridItemsFactory.TYPE.COLLECTION ||
+          descriptor.role === GridItemsFactory.TYPE.COLLECTION) {
+        if (descriptor.manifestURL) {
+          // At build time this property is manifestURL instead of bookmarkURL
+          descriptor.id = descriptor.bookmarkURL = descriptor.manifestURL;
+          descriptor.type = GridItemsFactory.TYPE.COLLECTION;
+        }
+        app = GridItemsFactory.create(descriptor);
+        if (app.type === GridItemsFactory.TYPE.COLLECTION) {
+          appsByOrigin[app.origin] = app;
+          if (haveLocale) {
+            descriptor.localizedName = navigator.mozL10n.get(app.manifest.name);
+          }
+        } else {
+          bookmarksById[app.id] = app;
+        }
       }
 
       var icon = icons[i] = new Icon(descriptor, app);
@@ -933,11 +1132,7 @@ var GridManager = (function() {
    * corresponding icon(s) for it (an app can have multiple entry
    * points, each one is represented as an icon.)
    */
-  function processApp(app, callback) {
-    // Ignore system apps.
-    if (HIDDEN_APPS.indexOf(app.manifestURL) != -1)
-      return;
-
+  function processApp(app, callback, gridPageOffset, gridPosition) {
     appsByOrigin[app.origin] = app;
 
     var manifest = app.manifest ? app.manifest : app.updateManifest;
@@ -945,8 +1140,8 @@ var GridManager = (function() {
       return;
 
     var entryPoints = manifest.entry_points;
-    if (!entryPoints || manifest.type != 'certified') {
-      createOrUpdateIconForApp(app);
+    if (!entryPoints || manifest.type !== 'certified') {
+      createOrUpdateIconForApp(app, null, gridPageOffset, gridPosition);
       return;
     }
 
@@ -954,7 +1149,25 @@ var GridManager = (function() {
       if (!entryPoints[entryPoint].icons)
         continue;
 
-      createOrUpdateIconForApp(app, entryPoint);
+      // do the normal procedure
+      if (launchPathBlacklist.length === 0) {
+        createOrUpdateIconForApp(app, entryPoint, gridPageOffset, gridPosition);
+        continue;
+      }
+
+      var found = false;
+      // filtering with blacklist
+      for (var i = 0, elemNum = launchPathBlacklist.length;
+         i < elemNum; i++) {
+        if (entryPoints[entryPoint].launch_path === launchPathBlacklist[i]) {
+          found = true;
+          break;
+        }
+      }
+
+      if (!found) {
+        createOrUpdateIconForApp(app, entryPoint, gridPageOffset, gridPosition);
+      }
     }
   }
 
@@ -962,19 +1175,108 @@ var GridManager = (function() {
     Detect if an app can work offline
   */
   function isHosted(app) {
-    return app.origin.indexOf('app://') === -1;
+    if (app.origin) {
+      return app.origin.indexOf('app://') === -1;
+    }
+
+    return false;
   }
 
   function hasOfflineCache(app) {
-    return app.manifest.appcache_path != null;
+    if (app.type === GridItemsFactory.TYPE.COLLECTION) {
+      return true;
+    } else {
+      var manifest = app ? app.manifest || app.updateManifest : null;
+      return manifest.appcache_path != null;
+    }
   }
 
   /*
-   * Create or update a single icon for an Application (or Bookmark) object.
+   * Add the manifest to the array of installed singlevariant apps
+   * @param {string} app's manifest to add
    */
-  function createOrUpdateIconForApp(app, entryPoint) {
+  function addPreviouslyInstalled(manifest) {
+    if (!isPreviouslyInstalled(manifest)) {
+      svPreviouslyInstalledApps.push({'manifest': manifest});
+    }
+  }
+
+  /*
+   * Return true if manifest is in the array of installed singleVariant apps,
+   * false otherwise
+   * @param {string} app's manifest consulted
+   */
+  function isPreviouslyInstalled(manifest) {
+    for (var i = 0, elemNum = svPreviouslyInstalledApps.length;
+         i < elemNum; i++) {
+      if (svPreviouslyInstalledApps[i].manifest === manifest) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /*
+   * SV - Return the single operator app (identify by manifest) or undefined
+   * if the manifesURL doesn't correspond with a SV app
+   */
+  function getSingleVariantApp(manifestURL) {
+    var singleVariantApps = Configurator.getSingleVariantApps();
+    if (manifestURL in singleVariantApps) {
+      var app = singleVariantApps[manifestURL];
+      if (app.screen !== undefined && app.location !== undefined) {
+        return app;
+      }
+    }
+  }
+
+
+  /*
+   * Builds a descriptor for an icon object
+   */
+  function buildDescriptor(app, entryPoint) {
+    var manifest = app.manifest ? app.manifest : app.updateManifest;
+
+    if (!manifest)
+      return;
+
+    var iconsAndNameHolder = manifest;
+    if (entryPoint)
+      iconsAndNameHolder = manifest.entry_points[entryPoint];
+
+    iconsAndNameHolder = new ManifestHelper(iconsAndNameHolder);
+
+    var descriptor = {
+      bookmarkURL: app.bookmarkURL,
+      url: app.url,
+      manifestURL: app.manifestURL,
+      entry_point: entryPoint,
+      updateTime: app.updateTime,
+      removable: app.removable,
+      name: iconsAndNameHolder.name,
+      icon: bestMatchingIcon(app, iconsAndNameHolder),
+      isHosted: isHosted(app),
+      hasOfflineCache: hasOfflineCache(app),
+      type: app.type,
+      id: app.id
+    };
+
+    if (haveLocale) {
+      if (app.type === GridItemsFactory.TYPE.COLLECTION) {
+        descriptor.localizedName = navigator.mozL10n.get(manifest.name);
+      } else if (app.type !== GridItemsFactory.TYPE.BOOKMARK) {
+        descriptor.localizedName = iconsAndNameHolder.name;
+      }
+    }
+
+    return descriptor;
+  }
+
+  function createOrUpdateIconForApp(app, entryPoint, gridPageOffset,
+                                    gridPosition) {
     // Make sure we update the icon/label when the app is updated.
-    if (!app.isBookmark) {
+    if (app.type !== GridItemsFactory.TYPE.COLLECTION &&
+        app.type !== GridItemsFactory.TYPE.BOOKMARK) {
       app.ondownloadapplied = function ondownloadapplied(event) {
         createOrUpdateIconForApp(event.application, entryPoint);
         app.ondownloadapplied = null;
@@ -985,48 +1287,62 @@ var GridManager = (function() {
       };
     }
 
-    var manifest = app.manifest ? app.manifest : app.updateManifest;
-    var iconsAndNameHolder = manifest;
-    if (entryPoint)
-      iconsAndNameHolder = manifest.entry_points[entryPoint];
-
-    iconsAndNameHolder = new ManifestHelper(iconsAndNameHolder);
-
-    var descriptor = {
-      bookmarkURL: app.bookmarkURL,
-      manifestURL: app.manifestURL,
-      entry_point: entryPoint,
-      updateTime: app.updateTime,
-      removable: app.removable,
-      name: iconsAndNameHolder.name,
-      icon: bestMatchingIcon(app, iconsAndNameHolder),
-      useAsyncPanZoom: app.useAsyncPanZoom,
-      isHosted: isHosted(app),
-      hasOfflineCache: hasOfflineCache(app),
-      isBookmark: app.isBookmark
-    };
-    if (haveLocale && !app.isBookmark) {
-      descriptor.localizedName = iconsAndNameHolder.name;
-    }
+    var descriptor = buildDescriptor(app, entryPoint);
 
     // If there's an existing icon for this bookmark/app/entry point already,
     // let it update itself.
     var existingIcon = getIcon(descriptor);
     if (existingIcon) {
-      existingIcon.update(descriptor, app);
+      if (app.manifest && isHiddenApp(app.manifest.role)) {
+        existingIcon.remove();
+      } else {
+        existingIcon.update(descriptor, app);
+      }
       markDirtyState();
+      return;
+    }
+
+    // If we have manifest and no updateManifest, do not add the icon:
+    // this is especially the case for pre-installed hidden apps, like
+    // keyboard, system, etc.
+    if (app.manifest && !app.updateManifest &&
+        isHiddenApp(app.manifest.role)) {
       return;
     }
 
     var icon = new Icon(descriptor, app);
     rememberIcon(icon);
 
-    var index = getFirstPageWithEmptySpace();
-
-    if (index < pages.length) {
-      pages[index].appendIcon(icon);
+    var index;
+    if (gridPosition) {
+      index = gridPosition.page || 0;
+      pages[index].appendIconAt(icon, gridPosition.index || 0);
     } else {
-      pageHelper.addPage([icon]);
+      var svApp = getSingleVariantApp(app.manifestURL);
+      if (svApp && !isPreviouslyInstalled(app.manifestURL)) {
+        index = svApp.screen;
+        icon.descriptor.desiredPos = svApp.location;
+        if (!Configurator.isSimPresentOnFirstBoot && index < pages.length &&
+            !pages[index].hasEmptySlot()) {
+          index = getFirstPageWithEmptySpace(index);
+        } else {
+          icon.descriptor.desiredScreen = index;
+        }
+      } else {
+        index = getFirstPageWithEmptySpace(gridPageOffset);
+      }
+
+      var iconLst = [icon];
+      while (iconLst.length > 0) {
+        icon = iconLst.shift();
+        index = icon.descriptor.desiredScreen || index;
+        if (index < pages.length) {
+          iconLst = iconLst.concat(pages[index].getMisplacedIcons(index));
+          pages[index].appendIcon(icon);
+        } else {
+          pageHelper.addPage([icon]);
+        }
+      }
     }
 
     markDirtyState();
@@ -1037,11 +1353,10 @@ var GridManager = (function() {
    * calls the method 'download'. That's applied
    * to an icon, that has associated an app already.
    */
-  function showRestartDownloadDialog(icon) {
+  function doShowRestartDownloadDialog(icon) {
     var app = icon.app;
-    var _ = navigator.mozL10n.get;
     var confirm = {
-      title: _('download'),
+      title: 'download',
       callback: function onAccept() {
         app.download();
         app.ondownloaderror = function(evt) {
@@ -1059,16 +1374,25 @@ var GridManager = (function() {
     };
 
     var cancel = {
-      title: _('cancel'),
+      title: 'cancel',
       callback: ConfirmDialog.hide
     };
 
     var localizedName = icon.descriptor.localizedName || icon.descriptor.name;
-    ConfirmDialog.show(_('restart-download-title'),
-      _('restart-download-body', {'name': localizedName}),
+    ConfirmDialog.show('restart-download-title',
+      {'id': 'restart-download-body', 'args': {'name': localizedName}},
       cancel,
       confirm);
     return;
+  }
+
+  function showRestartDownloadDialog(icon) {
+    LazyLoader.load(['shared/style/confirm.css',
+                     'style/request.css',
+                     document.getElementById('confirm-dialog'),
+                     'js/request.js'], function loaded() {
+      doShowRestartDownloadDialog(icon);
+    });
   }
 
   function bestMatchingIcon(app, manifest) {
@@ -1141,43 +1465,55 @@ var GridManager = (function() {
     bookmarkIcons = Object.create(null);
     appIcons = Object.create(null);
     appsByOrigin = Object.create(null);
-    bookmarksByOrigin = Object.create(null);
+    bookmarksById = Object.create(null);
 
     initUI(options.gridSelector);
 
     tapThreshold = options.tapThreshold;
-    swipeThreshold = windowWidth * options.swipeThreshold;
+    swipeThreshold = ScreenHelper.width * options.swipeThreshold;
     swipeFriction = options.swipeFriction || defaults.swipeFriction; // Not zero
     kPageTransitionDuration = options.swipeTransitionDuration;
-    overlayTransition = 'opacity ' + kPageTransitionDuration + 'ms ease';
 
-    window.addEventListener('hashchange', hashchange);
+    setMaxIconsToSearchPage();
+
     IconRetriever.init();
 
     // Initialize the grid from the state saved in IndexedDB.
     HomeState.init(function eachPage(pageState) {
       // First 'page' is the dock.
-      if (pageState.index == 0) {
+      if (pageState.index === 0) {
         var dockContainer = document.querySelector(options.dockSelector);
         var dock = new Dock(dockContainer,
           convertDescriptorsToIcons(pageState));
         DockManager.init(dockContainer, dock, tapThreshold);
         return;
       }
-      pageHelper.addPage(convertDescriptorsToIcons(pageState));
-    }, function onState() {
-      initApps();
-      callback();
+
+      var pageIcons = convertDescriptorsToIcons(pageState),
+          numberOfIcons = pageState.index === EVME_PAGE_STATE_INDEX ?
+          MAX_ICONS_PER_EVME_PAGE : MAX_ICONS_PER_PAGE;
+
+      pageHelper.addPage(pageIcons, numberOfIcons);
+    }, function onSuccess() {
+      initApps(callback);
     }, function onError(error) {
       var dockContainer = document.querySelector(options.dockSelector);
       var dock = new Dock(dockContainer, []);
       DockManager.init(dockContainer, dock, tapThreshold);
-      initApps();
-      callback();
+      initApps(callback);
+    }, function eachSVApp(svApp) {
+      GridManager.svPreviouslyInstalledApps.push(svApp);
     });
   }
 
   return {
+
+    hiddenRoles: HIDDEN_ROLES,
+
+    svPreviouslyInstalledApps: svPreviouslyInstalledApps,
+    isPreviouslyInstalled: isPreviouslyInstalled,
+    addPreviouslyInstalled: addPreviouslyInstalled,
+
     /*
      * Initializes the grid manager
      *
@@ -1187,6 +1523,10 @@ var GridManager = (function() {
      *
      */
     init: function gm_init(options, callback) {
+      // Add listener which will alert us when the SingleVariant configuration
+      // file has been read
+      addSVEventListener();
+
       // Populate defaults
       for (var key in defaults) {
         if (typeof options[key] === 'undefined') {
@@ -1194,7 +1534,18 @@ var GridManager = (function() {
         }
       }
 
-      doInit(options, callback);
+      // XXX bug 911696 get entrypoints blacklist from settings
+      // then doInit
+      if ('mozSettings' in navigator) {
+        var key = 'app.launch_path.blacklist';
+        var req = navigator.mozSettings.createLock().get(key);
+        req.onsuccess = function onsuccess() {
+          launchPathBlacklist = req.result[key] || [];
+          doInit(options, callback);
+        };
+      } else {
+        doInit(options, callback);
+      }
     },
 
     onDragStart: function gm_onDragSart() {
@@ -1208,8 +1559,7 @@ var GridManager = (function() {
       dragging = false;
       delete document.body.dataset.transitioning;
       ensurePanning();
-      ensurePagesOverflow();
-      removeEmptyPages();
+      ensurePagesOverflow(removeEmptyPages);
     },
 
     /*
@@ -1218,9 +1568,19 @@ var GridManager = (function() {
      *
      * @param {Application} app
      *                      The application (or bookmark) object
+     * @param {Object}      gridPageOffset
+     *                      Position to install the app: number (page index)
+     * @param {Object}      extra
+     *                      Optional parameters
      */
-    install: function gm_install(app) {
-      processApp(app);
+    install: function gm_install(app, gridPageOffset, extra) {
+      extra = extra || {};
+
+      processApp(app, null, gridPageOffset);
+
+      if (extra.callback) {
+        extra.callback();
+      }
     },
 
     /*
@@ -1235,7 +1595,8 @@ var GridManager = (function() {
 
       delete appsByOrigin[app.origin];
 
-      if (app.isBookmark) {
+      if (app.type === GridItemsFactory.TYPE.COLLECTION ||
+          app.type === GridItemsFactory.TYPE.BOOKMARK) {
         var icon = bookmarkIcons[app.bookmarkURL];
         updateDock = dock.containsIcon(icon);
         icon.remove();
@@ -1248,9 +1609,24 @@ var GridManager = (function() {
         for (var entryPoint in iconsForApp) {
           var icon = iconsForApp[entryPoint];
           updateDock = updateDock || dock.containsIcon(icon);
+          icon.app.ondownloadapplied = icon.app.ondownloaderror = null;
           icon.remove();
         }
         delete appIcons[app.manifestURL];
+      }
+
+      if (app.type === GridItemsFactory.TYPE.COLLECTION) {
+        window.dispatchEvent(new CustomEvent('collectionUninstalled', {
+          'detail': {
+            'collection': app
+          }
+        }));
+      } else {
+        window.dispatchEvent(new CustomEvent('appUninstalled', {
+          'detail': {
+            'descriptor': buildDescriptor(app)
+          }
+        }));
       }
 
       if (updateDock)
@@ -1264,13 +1640,17 @@ var GridManager = (function() {
 
     getIcon: getIcon,
 
+    getIconByOrigin: getIconByOrigin,
+
     getIconsForApp: getIconsForApp,
 
     getIconForBookmark: getIconForBookmark,
 
+    getApp: getApp,
+
     getApps: getApps,
 
-    getAppByOrigin: getAppByOrigin,
+    getCollections: getCollections,
 
     goToPage: goToPage,
 
@@ -1278,15 +1658,13 @@ var GridManager = (function() {
 
     goToNextPage: goToNextPage,
 
+    goToLandingPage: goToLandingPage,
+
     localize: localize,
 
     dirCtrl: dirCtrl,
 
     pageHelper: pageHelper,
-
-    get landingPage() {
-      return landingPage;
-    },
 
     getBlobByDefault: function(app) {
       if (app && app.iconable) {
@@ -1300,6 +1678,20 @@ var GridManager = (function() {
 
     exitFromEditMode: exitFromEditMode,
 
-    ensurePanning: ensurePanning
+    ensurePanning: ensurePanning,
+
+    ensurePagesOverflow: ensurePagesOverflow,
+
+    contextmenu: contextmenu,
+
+    cancelPanning: cancelPanning,
+
+    get container() {
+      return container;
+    },
+
+    forgetIcon: forgetIcon,
+
+    rememberIcon: rememberIcon
   };
 })();

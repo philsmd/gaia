@@ -3,21 +3,23 @@
  * porting the handleEvent thing over here for now
  * to eventually be moved back with the other tweaks.
  */
+define(function(require) {
+'use strict';
 
-requireApp('calendar/test/unit/helper.js');
+var Responder = require('responder');
 
 suite('responder', function() {
   var subject;
 
   setup(function() {
-    subject = new Calendar.Responder();
+    subject = new Responder();
   });
 
   test('multi arg responder', function() {
     var calledWith;
 
     subject.on('test', function() {
-      calledWith = arguments;
+      calledWith = Array.slice(arguments);
     });
 
     subject.respond(['test', 'one', 'two', 'three']);
@@ -25,7 +27,6 @@ suite('responder', function() {
   });
 
   suite('handleEvent', function() {
-
     test('object', function() {
       var events = {};
       var target = {
@@ -49,15 +50,38 @@ suite('responder', function() {
       subject.emit('bar', 1, 2);
 
       assert.deepEqual(
-        events['foo'],
+        events.foo,
         [[1], [1]]
       );
 
       assert.deepEqual(
-        events['bar'],
+        events.bar,
         [[1, 2]]
       );
     });
 
   });
+
+  test('#emitWhenListener', function(done) {
+    subject.emitWhenListener('foo', 'bar');
+    subject.emitWhenListener('foo', 'baz');
+
+    // Let the event loop tick before listening for the 'foo' topic.
+    setTimeout(() => {
+      var count = 0;
+      subject.on('foo', function onFoo(word) {
+        if (count === 0) {
+          assert.equal(word, 'bar');
+          count++;
+          return;
+        }
+
+        assert.equal(word, 'baz');
+        subject.off('foo', onFoo);
+        done();
+      });
+    }, 0);
+  });
+});
+
 });

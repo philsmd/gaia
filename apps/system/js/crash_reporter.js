@@ -11,8 +11,9 @@ var CrashReporter = (function() {
   var settings = navigator.mozSettings;
   var screen = document.getElementById('screen');
 
-  // The name of the app that just crashed.
-  var crashedAppName = '';
+  // The name of the app that just crashed. We'll have special handling for
+  // when this remains null or is set to null.
+  var crashedAppName = null;
 
   // Whether or not to show a "Report" button in the banner.
   var showReportButton = false;
@@ -26,9 +27,16 @@ var CrashReporter = (function() {
 
   // This function should only ever be called once.
   function showDialog(crashID, isChrome) {
-    var title = isChrome ? _('crash-dialog-os2') :
-      _('crash-dialog-app', { name: crashedAppName });
-    document.getElementById('crash-dialog-title').textContent = title;
+    var elem = document.getElementById('crash-dialog-title');
+    if (isChrome) {
+      navigator.mozL10n.setAttributes(elem, 'crash-dialog-os2');
+    } else {
+      navigator.mozL10n.setAttributes(
+        elem,
+        'crash-dialog-app',
+        { name: crashedAppName || _('crash-dialog-app-noname') }
+      );
+    }
 
     // "Don't Send Report" button in dialog
     var noButton = document.getElementById('dont-send-report');
@@ -58,9 +66,9 @@ var CrashReporter = (function() {
     var crashInfoLink = document.getElementById('crash-info-link');
     crashInfoLink.addEventListener('click', function onLearnMoreClick() {
       var dialog = document.getElementById('crash-dialog');
-      document.getElementById('crash-reports-done').
-               addEventListener('click', function onDoneClick() {
-        this.removeEventListener('click', onDoneClick);
+      document.getElementById('crash-reports-header').
+               addEventListener('action', function onAction() {
+        this.removeEventListener('click', onAction);
         dialog.classList.remove('learn-more');
       });
       dialog.classList.add('learn-more');
@@ -77,8 +85,9 @@ var CrashReporter = (function() {
   }
 
   function showBanner(crashID, isChrome) {
+    var appName = crashedAppName || _('crash-dialog-app-noname');
     var message = isChrome ? _('crash-banner-os2') :
-      _('crash-banner-app', { name: crashedAppName });
+      _('crash-banner-app', { name: appName });
 
     var button = null;
     if (showReportButton) {
@@ -93,7 +102,8 @@ var CrashReporter = (function() {
       };
     }
 
-    SystemBanner.show(message, button);
+    var systemBanner = new SystemBanner();
+    systemBanner.show(message, button);
   }
 
   function deleteCrash(crashID) {
@@ -145,7 +155,22 @@ var CrashReporter = (function() {
     }
   });
 
+  function handleAppCrash(e) {
+    var app = e.detail;
+    // Only show crash reporter when the crashed app is active.
+    if (app.isActive()) {
+      setAppName(app.name);
+    }
+  }
+
+  window.addEventListener('appcrashed', handleAppCrash);
+  window.addEventListener('activitycrashed', handleAppCrash);
+  window.addEventListener('homescreencrashed', handleAppCrash);
+  window.addEventListener('searchcrashed', handleAppCrash);
+
   return {
+    handleCrash: handleCrash,
+    handleAppCrash: handleAppCrash,
     setAppName: setAppName
   };
 })();

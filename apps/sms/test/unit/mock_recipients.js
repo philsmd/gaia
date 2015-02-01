@@ -1,21 +1,49 @@
+'use strict';
+
 function MockRecipients(setup) {
   this.setup = setup;
   this.recipientsList = document.getElementById(setup.inner);
-  this.length = 0;
+  Object.defineProperty(this, 'length', {
+    get: function() {
+      return this.numbersList.length;
+    },
+    set: function(val) {
+      this.numbersList.length = val;
+    }
+  });
+
+  Object.defineProperty(this, 'numbers', {
+    get: function() {
+      return Array.from(this.numbersList);
+    }
+  });
+
   this.events = {
     add: [],
-    remove: []
+    remove: [],
+    modechange: []
   };
-  this.numbers = [];
+  this.numbersList = [];
+  this.inputValue = '';
+  this.list = [];
 }
 
 MockRecipients.prototype.add = function(contact) {
   var span = document.createElement('span');
   span.textContent = contact.number;
   this.recipientsList.appendChild(span);
-  this.length++;
-  this.numbers.push(contact.number);
-  this.emit('add', this.length);
+  this.numbersList.push(contact.number);
+  this.list.push(contact);
+  this.emit('add', this.length, contact);
+  return this;
+};
+
+MockRecipients.prototype.remove = function(phone) {
+  var index = this.numbersList.indexOf(phone);
+  if (index != -1) {
+    this.numbersList.splice(this.numbersList.indexOf(phone), 1);
+    this.emit('remove', this.length);
+  }
   return this;
 };
 
@@ -24,6 +52,10 @@ MockRecipients.prototype.render = function() {
 };
 
 MockRecipients.prototype.focus = function() {
+  return this;
+};
+
+MockRecipients.prototype.update = function() {
   return this;
 };
 
@@ -59,3 +91,8 @@ MockRecipients.prototype.emit = function(type) {
 
   return this;
 };
+
+
+MockRecipients.View = function() {};
+
+MockRecipients.View.isFocusable = true;

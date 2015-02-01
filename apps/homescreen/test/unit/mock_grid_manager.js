@@ -4,6 +4,21 @@
 var currentPage;
 
 var MockGridManager = {
+  svPreviouslyInstalledApps: [],
+  addPreviouslyInstalled: function(manifest) {
+    if (!this.isPreviouslyInstalled(manifest)) {
+      this.svPreviouslyInstalledApps.push({'manifest': manifest});
+    }
+  },
+  isPreviouslyInstalled: function(manifest) {
+    for (var i = 0, elemNum = this.svPreviouslyInstalledApps.length;
+         i < elemNum; i++) {
+      if (this.svPreviouslyInstalledApps[i].manifest === manifest) {
+        return true;
+      }
+    }
+    return false;
+  },
   markDirtyState: function() {},
   localize: function() {},
   onDragStart: function() {},
@@ -23,9 +38,13 @@ var MockGridManager = {
 
         },
         draggableElem: {
+          dataset: nodes[i].dataset,
           style: {
 
           }
+        },
+        getLeft: function() {
+          return this.container.getBoundingClientRect().left;
         },
         addClassToDragElement: function() {
 
@@ -38,6 +57,9 @@ var MockGridManager = {
         },
         loadRenderedIcon: function(callback) {
           callback('http://app.png');
+        },
+        remove: function() {
+          this.container.parentNode.removeChild(this.container);
         }
       };
     }
@@ -47,10 +69,21 @@ var MockGridManager = {
   },
   pageHelper: {
     getCurrent: function() {
+      if (!currentPage) {
+        var aux = {
+          getIconIndex: function() {
+            return 1;
+          }
+        };
+        return aux;
+      }
       return currentPage;
     },
     getCurrentPageNumber: function() {
       return 0;
+    },
+    getPage: function() {
+      return currentPage;
     }
   },
   dirCtrl: {

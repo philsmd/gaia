@@ -1,3 +1,11 @@
+/*
+ * By default do not allow any user text selection, only enable
+ * for certain parts on a per-element/region area.
+*/
+* {
+  -moz-user-select: none;
+}
+
 html {
   height: 100%;
   width: 100%;
@@ -14,6 +22,7 @@ body {
   height: 100%;
   width: 100%;
   overflow: hidden;
+  background-color: black;
 }
 
 /*
@@ -27,8 +36,8 @@ body {
   position: absolute;
   top: 0;
   left: 0;
-  width: 100%;
-  height: 100%;
+  bottom: 0;
+  right: 0;
 
   /* almost transparent gray */
   background-color: rgba(0, 0, 0, 0.4);
@@ -65,7 +74,8 @@ body {
   font-weight: normal;
   font-size: 1.9rem;
   color: #fff;
-  margin: 0 0.5rem -1rem 0.5rem;
+  margin: 0 0.5rem 0 0.5rem;
+  padding: 0;
 }
 
 #overlay-text {
@@ -74,6 +84,15 @@ body {
   font-weight: 300;
   font-size: 2.5rem;
   color: #ebebeb;
+}
+
+#overlay-menu {
+  z-index: 100;
+}
+
+/* For overriding the style from BB */
+#overlay-menu.hidden {
+  display: none;
 }
 
 /* Spinner */
@@ -88,7 +107,7 @@ body {
 
 /*
  * spinner animation styles copied from
- * shared/style_unstable/progress_activity.css
+ * shared/style/progress_activity.css
  */
 #spinner {
   position: absolute;
@@ -161,13 +180,6 @@ body {
   text-overflow: ellipsis;
 }
 
-body.tiles-mode #title-back,
-body.list-mode #title-back,
-body.search-from-tiles-mode #title-back,
-body.search-from-list-mode #title-back {
-  display: none;
-}
-
 body.search-from-tiles-mode #title,
 body.search-from-list-mode #title {
   transform: translateY(-5rem);
@@ -226,15 +238,12 @@ body.picker-mode #views {
 
 body.player-mode #title-player,
 body.picker-mode #title-player {
+  display: none !important;
+}
+
+#title-player[hidden],
+#title-done[hidden] {
   display: none;
-}
-
-#title-player > .icon-player {
-  background-image: url("./images/now_playing.png");
-}
-
-#title-done > .icon-done {
-  background-image: url("./images/IconAction_done_30x30.png");
 }
 
 #title {
@@ -250,9 +259,9 @@ body.picker-mode #title-player {
 }
 
 #search {
-  position: absolute;
+  position: relative;
   width: 100%;
-  height: calc(100% - 3.6rem);
+  height: calc(100% - 3.7rem);
   overflow-x: hidden;
   overflow-y: auto;
   background: -moz-linear-gradient(center top, #303030 0%, #000000 100%) repeat scroll 0 0 transparent;
@@ -275,33 +284,34 @@ body.picker-mode #title-player {
 #views-tiles,
 #views-list,
 #views-sublist {
-  height: 100%;
+  height: calc(100% - 4.5rem);
   overflow-x: hidden;
   overflow-y: auto;
-  background: -moz-linear-gradient(center top, #303030 0%, #000000 100%) repeat scroll 0 0 transparent;
+  background-color: #0E1214;
+  will-change: scroll-position;
 }
 
 #views-tiles {
-  left: 0%;
+  transform: translateX(0);
 }
 
 #views-list {
-  left: 100%;
+  transform: translateX(100%);
 }
 
 #views-sublist {
-  left: 200%;
+  transform: translateX(200%);
   overflow-y: hidden;
 }
 
 #views-player {
-  left: 300%;
+  transform: translateX(300%);
   height: 100%;
   overflow: hidden;
 }
 
 #views-player.open-mode {
-  left: 0%;
+  transform: translateX(0);
 }
 
 /* Make sure the tiles and list views are tall enough that we can scroll the
@@ -309,6 +319,24 @@ body.picker-mode #title-player {
 #views-tiles-anchor,
 #views-list-anchor {
   min-height: 100%;
+}
+
+/*
+ * Enable the text selection in the tiles and list search inputs.
+ */
+#views-tiles-search-input,
+#views-list-search-input {
+  -moz-user-select: text;
+}
+
+/*
+ * Bug 968456 - Ensure background
+ * scrolls w/ the content
+ */
+#views-tiles-anchor,
+#views-list-anchor,
+#views-sublist-anchor {
+  background-color: #0E1214;
 }
 
 #views-sublist-header,
@@ -319,17 +347,23 @@ body.picker-mode #title-player {
 }
 
 #views-sublist-header {
-  height: 8rem;
+  height: 8.1rem;
+}
+
+#views-scrollable-sublist-anchor {
+  overflow-x: hidden;
+  overflow-y: auto;
+  width: 100%;
+  height: calc(100% - 8rem);
 }
 
 #views-sublist-anchor {
   width: 100%;
   height: calc(100% - 8rem);
-  overflow-x: hidden;
-  overflow-y: auto;
+  will-change: scroll-position;
 }
 
-#views-sublist-header-default,
+#views-sublist-header-image,
 #views-sublist-header-controls {
   position: relative;
   float: left;
@@ -337,14 +371,13 @@ body.picker-mode #title-player {
   border-bottom: solid 0.1rem rgba(255, 255, 255, 0.1);
 }
 
-#views-sublist-header-default {
+#views-sublist-header-image {
   width: 8rem;
   height: 8rem;
   overflow: hidden;
-}
-
-#views-sublist-header-image {
-  position: absolute;
+  background-clip: content-box;
+  background-size: cover;
+  background-position: center center;
   opacity: 0;
 }
 
@@ -377,14 +410,7 @@ body.picker-mode #title-player {
   background-position: center center;
   background-repeat: no-repeat;
   background-size: 3rem;
-}
-
-#views-sublist-controls-play {
-  background-image: url("./images/IconAction_Media_Play_30x30.png");
-}
-
-#views-sublist-controls-shuffle {
-  background-image: url("./images/IconAction_Media_ShuffleOn_30x30.png");
+  color: #fff;
 }
 
 .album-controls-button {
@@ -418,6 +444,47 @@ body.picker-mode #title-player {
   /* We set a background URL here when the thumbnail loads */
 }
 
+/* Tiles are grouped in 6. Left and right groups. */
+html[dir="ltr"] .tile:nth-child(12n+1),
+html[dir="ltr"] .tile:nth-child(12n+2),
+html[dir="ltr"] .tile:nth-child(12n+3),
+html[dir="ltr"] .tile:nth-child(12n+4),
+html[dir="ltr"] .tile:nth-child(12n+5),
+html[dir="ltr"] .tile:nth-child(12n+6),
+html[dir="rtl"] .tile:nth-child(12n+7),
+html[dir="rtl"] .tile:nth-child(12n+8),
+html[dir="rtl"] .tile:nth-child(12n+9),
+html[dir="rtl"] .tile:nth-child(12n+10),
+html[dir="rtl"] .tile:nth-child(12n+11),
+html[dir="rtl"] .tile:nth-child(12n+12) {
+  float: left;
+  left: 0.5%;
+}
+
+/* right groups */
+html[dir="ltr"] .tile:nth-child(12n+7),
+html[dir="ltr"] .tile:nth-child(12n+8),
+html[dir="ltr"] .tile:nth-child(12n+9),
+html[dir="ltr"] .tile:nth-child(12n+10),
+html[dir="ltr"] .tile:nth-child(12n+11),
+html[dir="ltr"] .tile:nth-child(12n+12),
+html[dir="rtl"] .tile:nth-child(12n+1),
+html[dir="rtl"] .tile:nth-child(12n+2),
+html[dir="rtl"] .tile:nth-child(12n+3),
+html[dir="rtl"] .tile:nth-child(12n+4),
+html[dir="rtl"] .tile:nth-child(12n+5),
+html[dir="rtl"] .tile:nth-child(12n+6) {
+  float: right;
+  right: 0.5%;
+}
+
+/* Favor scrolling performance over quality while scrolling */
+#views.scroll li.list-item,
+#views.scrolling .tile {
+  image-rendering: -moz-crisp-edges;
+  text-rendering: optimizeSpeed;
+}
+
 .main-tile {
   width: 66%;
   height: 0;
@@ -443,14 +510,9 @@ body.picker-mode #title-player {
   width: 33%;
   height: 0;
   padding-bottom: 33%;
-  font-weight: lighter;
+  font-weight: 300;
   background-color: #303030;
   overflow: hidden;
-}
-
-.main-tile:last-child,
-.sub-tile:last-child {
-  margin-bottom: 4rem;
 }
 
 .tile-container {
@@ -509,72 +571,10 @@ body.picker-mode #title-player {
   color: rgba(255, 255, 255, 0.8);
 }
 
-.float-left {
-  position: relative;
-  float: left;
-  left: 0.5%;
-}
-
-.float-right {
-  position: relative;
-  float: right;
-  right: 0.5%;
-}
-
-.default-album-0 {
-  background-image: url('./images/AlbumArt1_small.png');
-  background-size: 100% 100%;
-}
-
-.default-album-1 {
-  background-image: url('./images/AlbumArt2_small.png');
-  background-size: 100% 100%;
-}
-
-.default-album-2 {
-  background-image: url('./images/AlbumArt3_small.png');
-  background-size: 100% 100%;
-}
-
-.default-album-3 {
-  background-image: url('./images/AlbumArt4_small.png');
-  background-size: 100% 100%;
-}
-
-.default-album-4 {
-  background-image: url('./images/AlbumArt5_small.png');
-  background-size: 100% 100%;
-}
-
-.default-album-5 {
-  background-image: url('./images/AlbumArt6_small.png');
-  background-size: 100% 100%;
-}
-
-.default-album-6 {
-  background-image: url('./images/AlbumArt7_small.png');
-  background-size: 100% 100%;
-}
-
-.default-album-7 {
-  background-image: url('./images/AlbumArt8_small.png');
-  background-size: 100% 100%;
-}
-
-.default-album-8 {
-  background-image: url('./images/AlbumArt9_small.png');
-  background-size: 100% 100%;
-}
-
-.default-album-9 {
-  background-image: url('./images/AlbumArt10_small.png');
-  background-size: 100% 100%;
-}
-
 #player-cover {
   position: relative;
   width: 100%;
-  height: calc(100% - 10rem);
+  height: calc(100% - 9.1rem);
   overflow: hidden;
 }
 
@@ -590,15 +590,19 @@ body.picker-mode #title-player {
 
 .fadeIn {
   animation-name: fadeIn;
-  animation-duration: 1500ms;
+  animation-duration: 500ms;
   animation-timing-function: ease-in-out;
   animation-fill-mode: forwards;
-  animation-delay: 500ms;
+  animation-delay: 50ms;
 }
 
 #player-cover-image {
   position: absolute;
+  width: 100%;
+  height: 100%;
   opacity: 0;
+  background-position: center;
+  background-size: cover;
 }
 
 #player-cover.slideOut #player-cover-caption {
@@ -629,23 +633,50 @@ body.picker-mode #title-player {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  text-align: left;
   text-indent: 3rem;
   text-shadow: black 0.1rem 0.1rem;
   line-height: 2.5rem;
+  width: 75%;
+  height: auto;
 }
 
 #player-cover-artist {
-  width: 100%;
-  height: auto;
-  text-align: left;
   font-size: 1.9rem;
 }
 
 #player-cover-album {
-  width: 100%;
-  height: auto;
-  text-align: left;
   font-size: 1.7rem;
+}
+
+html[dir="rtl"] #player-cover-artist,
+html[dir="rtl"] #player-cover-album {
+  text-align: right;
+}
+
+#player-cover-artist.hidden-cover-share,
+#player-cover-album.hidden-cover-share {
+  width: 100%;
+}
+
+#player-cover-share {
+  width: calc(25% - 2rem);
+  height: 80%;
+  padding: 0;
+  border-radius: 3.5rem;
+  margin: 0 1rem;
+  font-weight: 500;
+  position: absolute;
+  top: 10%;
+  right: -2%;
+  z-index: 1;
+  color: #fff;
+}
+
+html[dir="rtl"] #player-cover-share {
+  right: unset;
+  left: -2%;
+  margin: 0 0 0 1rem;
 }
 
 #player-cover-buttons {
@@ -668,33 +699,28 @@ body.picker-mode #title-player {
   border-radius: 3.5rem;
   margin: 0 1rem;
   font-weight: 500;
-  background-position: center center;
-  background-repeat: no-repeat;
-  background-size: 3rem;
-}
-
-#player-album-shuffle {
-  background-image: url("./images/IconAction_Media_ShuffleOff_30x30.png");
-}
-
-#player-album-shuffle:disabled {
-  background-image: url("./images/IconAction_Media_ShuffleOn_30x30.png");
+  color: #777;
 }
 
 #player-album-shuffle.shuffle-on {
-  background-image: url("./images/IconAction_Media_ShuffleOn_30x30.png");
+  color: #fff;
 }
 
-#player-album-repeat.repeat-off {
-  background-image: url("./images/IconAction_Media_RepeatOff_30x30.png");
+#player-album-shuffle:disabled {
+  color: #777;
 }
 
-#player-album-repeat.repeat-list {
-  background-image: url("./images/IconAction_Media_RepeatList_30x30.png");
+#player-album-repeat:disabled {
+  color: #777;
 }
 
+#player-album-repeat.repeat-list,
 #player-album-repeat.repeat-song {
-  background-image: url("./images/IconAction_Media_RepeatSong_30x30.png");
+  color: #fff;
+}
+
+#player-album-repeat.repeat-song:before {
+  content: 'repeat-once';
 }
 
 #player-album-rating {
@@ -721,7 +747,11 @@ button::-moz-focus-inner {
   background-position: center center;
   background-repeat: no-repeat;
   background-color: transparent;
-  background-size: 2.4rem;
+  background-size: 2.2rem;
+}
+
+html[dir="rtl"] .rating-star {
+  float: right;
 }
 
 .star-on {
@@ -730,139 +760,135 @@ button::-moz-focus-inner {
 
 #player-seek {
   position: relative;
-  width: 100%;
-  height: 4.5rem;
-  background: url('./images/scroll_bar_bg.png');
-  background-position: center center;
-  background-repeat: no-repeat;
-  background-size: 100% 2.1rem;
-  background-color: #151515;
-  overflow: hidden;
+  height: 4.2rem;
+  font-size: 0;
+  background-color: rgba(0,0,0, 0.85);
+}
+
+#player-seek.disabled {
+  pointer-events: none;
+  opacity: 0.3;
 }
 
 #player-seek-elapsed,
 #player-seek-bar,
 #player-seek-remaining {
+  display: inline-block;
   position: relative;
-  float: left;
+  vertical-align: top;
 }
 
 #player-seek-elapsed,
 #player-seek-remaining {
-  top: calc(50% - 0.69rem);
-  width: 18%;
-  line-height: 1.38rem;
+  width: 5.3rem;
+  line-height: 4.2rem;
   font-size: 1.4rem;
-  font-weight: 500;
-  color: #a1afb2;
-  text-align: center;
+  font-weight: 400;
+  color: #e7e7e7;
+}
+
+#player-seek-elapsed {
+  padding-left: 1.5rem;
+}
+
+#player-seek-remaining {
+  text-align: right;
+  padding-right: 1.5rem;
 }
 
 #player-seek-bar {
-  width: 60%;
+  display: inline-block;
+  width: calc(100% - 13.6rem);
   height: 100%;
-  padding: 0 2%;
+  z-index: 1;
 }
 
 #player-seek-bar-progress {
   pointer-events: none;
   -moz-appearance: none;
   position: absolute;
-  top: calc(50% - 0.15rem);
-  left: 2.5%;
-  width: 95%;
-  height: 0.3rem;
-  border-radius: 0.5rem;
+  top: calc(50% - 0.1rem);
+  left: 0;
+  height: 0.1rem;
   border-width: 0;
-  box-shadow: 0.1rem 0.1rem rgba(255, 255, 255, 0.2);
-  background: url("./images/timeline.png");
-  background-position: center center;
-  background-repeat: no-repeat;
-  background-size: 100% 100%;
+  border-radius: 0;
+  background-color: #a6b4b7;
 }
 
 #player-seek-bar-progress::-moz-progress-bar {
-  border-radius: 0.5rem;
-  background: url("./images/timeline_filled.png");
-  background-position: center center;
-  background-repeat: no-repeat;
-  background-size: 100% 100%;
+  height: 0.3rem;
+  margin-top: -0.1rem;
+  background-color: #00CAF2;
 }
 
 #player-seek-bar-indicator {
   position: absolute;
-  top: calc(50% - 4.05rem);
-  width: 6.5rem;
-  height: 6.5rem;
-  border-radius: 50%;
-  background-image: url("./images/scrubber.png");
-  background-position: center center;
-  background-repeat: no-repeat;
-  background-color: transparent;
-  border: solid 0.8rem transparent;
-  transition: background-color 300ms ease,
-              border 300ms ease;
+  top: calc(50% - 1.15rem);
+  width: 2.3rem;
+  height: 2.3rem;
   pointer-events: none;
 }
 
-#player-seek-bar-indicator.highlight {
-  /* background-image does not support transition
-   * so here we use background-color and border on a div
-   * to draw an image just like
-   * url("./images/scrubber_pressed.png")
-   * that image is also committed
-   * if UX wants to use the original image
-   */
-  background-color: rgba(0, 180, 225, 0.85);
-  border: solid 0.8rem rgba(0, 0, 0, 0.3);
+#player-seek-bar-indicator:after {
+  content: "";
+  position: absolute;
+  top: calc(50% - 1.25rem);
+  left: calc(50% - 1.15rem);
+  width: 2.1rem;
+  height: 2.1rem;
+  border-radius: 50%;
+  border: 0.1rem solid #ffffff;
+  background-color: #ffffff;
+}
+
+
+#player-seek-bar-indicator.highlight:before {
+  content: "";
+  position: absolute;
+  top: calc(50% - 3.05rem);
+  left: calc(50% - 3.05rem);
+  width: 6.1rem;
+  height: 6.1rem;
+  border-radius: 50%;
+  background-color: #00CAF2;
 }
 
 #player-controls {
   position: relative;
-  width: 100%;
-  height: 5.5rem;
+  height: 4.8rem;
+  font-size: 0;
+  vertical-align: top;
+  border-top: 0.1rem solid rgba(255,255,255, 0.1);
+  background-color: #000;
   overflow: hidden;
-  background: rgba(0, 0, 0, 1);
 }
 
 #player-controls-previous,
 #player-controls-play,
 #player-controls-next {
   position: relative;
-  float: left;
   height: 100%;
   padding: 0;
-  border-width: 0;
   font-weight: 500;
-  overflow: hidden;
   background-position: center center;
   background-repeat: no-repeat;
   background-size: 3rem;
 }
 
-#player-controls-previous,
-#player-controls-next {
-  width: 30%;
-}
-
-#player-controls-play {
-  width: 40%;
-}
-
 #player-controls-previous {
-  background-image: url("./images/IconAction_Media_SkipBackwards_30x30.png");
+  width: 33%;
 }
 
 #player-controls-play {
-  background-image: url("./images/IconAction_Media_Pause_30x30.png");
+  width: 34%;
 }
 
-#player-controls-play.is-pause {
-  background-image: url("./images/IconAction_Media_Play_30x30.png");
+#player-controls-play.is-pause:before {
+  content: 'play';
 }
 
 #player-controls-next {
-  background-image: url("./images/IconAction_Media_SkipForward_30x30.png");
+  width: 33%;
 }
 
 .player-controls-button {
@@ -876,7 +902,7 @@ button::-moz-focus-inner {
   background: transparent;
 }
 .player-controls-button:active {
-  background: rgb(0, 138, 170);
+  background: #00caf2;
 }
 .player-controls-button:disabled {
   opacity: 0.3;
@@ -889,43 +915,25 @@ button::-moz-focus-inner {
   position: absolute;
   bottom: 0;
   width: 100%;
-  height: 4rem;
   z-index: 20;
 }
 
-/* Overwrite BB tabs background transparency */
-[role="tablist"] > [role="tab"] > a {
-  background-color: rgba(0, 0, 0, 0.75);
+#tabs li:last-child {
+  margin-bottom: 0;
 }
 
 #tabs a {
   outline: none;
 }
 
-#mix[role="tab"] a:after {
-  background-image: url("./images/iconaction_media_gridview.png");
-}
-
-#playlists[role="tab"] a:after {
-  background-image: url("./images/iconaction_media_playlistfilter.png");
-}
-
-#artists[role="tab"] a:after {
-  background-image: url("./images/iconaction_media_artistfilter.png");
-}
-
-#albums[role="tab"] a:after {
-  background-image: url("./images/iconaction_media_albumfilter.png");
-}
-
-#songs[role="tab"] a:after {
-  background-image: url("./images/iconaction_media_songsfilter.png");
+#tabs li {
+  overflow: hidden;
 }
 
 .player-cover-button {
   border: none;
   border-radius: 0;
-  background: transparent;
+  background: none;
   transition: background 200ms ease;
 }
 .player-cover-button:hover {
@@ -945,10 +953,6 @@ button::-moz-focus-inner {
   display: none;
 }
 
-li:last-child {
-  padding-bottom: 4rem;
-}
-
 li.list-header {
   list-style-type: none;
   position: relative;
@@ -962,10 +966,21 @@ li.list-header {
   pointer-events: none;
 }
 
+html[dir="rtl"] li.list-header {
+  margin: 0 3rem 0 8rem;
+}
+
 li.list-item {
   list-style-type: none;
   position: relative;
   width: 100%;
+  background-size: contain;
+  background-position: calc(100% - 2.5rem) -0.1rem;
+  background-repeat: no-repeat;
+}
+
+html[dir="rtl"] li.list-item {
+  background-position: calc(0% + 2.5rem) -0.1rem;
 }
 
 li.list-item a {
@@ -980,14 +995,14 @@ li.list-item a {
   text-overflow: ellipsis;
   width: 100%;
   height: 6rem;
-  background: transparent;
-  transition: background 200ms ease;
+  background-color: transparent;
+  transition: background-color 200ms ease;
 }
 
 li.list-item a:active {
   color: black;
   text-shadow: rgba(255, 255, 255, 0.5) 0.1rem 0.1rem;
-  background: rgb(0, 138, 170);
+  background-color: rgba(52,140,158, .6);
 }
 
 /* title width is 100% - 1rem(padding) - 6rem(albumArt) */
@@ -1012,12 +1027,20 @@ li.list-item a:active {
   color: white;
 }
 
+html[dir="rtl"] .list-main-title {
+  padding: 0 3rem 0 0.5rem;
+}
+
 .list-sub-title {
   top: 3rem;
   width: calc(100% - 12rem);
   padding: 0 0.5rem 0 3rem;
   font-size: 1.7rem;
   color: #8a9699;
+}
+
+html[dir="rtl"] .list-sub-title {
+  padding: 0 3rem 0 0.5rem;
 }
 
 .list-single-title {
@@ -1027,6 +1050,10 @@ li.list-item a:active {
   padding: 0 0.5rem 0 3rem;
   font-size: 1.9rem;
   color: white;
+}
+
+html[dir="rtl"] .list-single-title {
+  padding: 0 3rem 0 0.5rem;
 }
 
 .list-playlist-title {
@@ -1040,17 +1067,24 @@ li.list-item a:active {
   border-bottom: solid 0.1rem rgba(255, 255, 255, 0.1);
 }
 
+html[dir="rtl"] .list-playlist-title {
+  padding-left: 0.5rem;
+  padding-right: 3rem;
+}
+
 .list-playlist-icon {
   position: absolute;
   top: 0;
   right: 2rem;
   width: 4rem;
   height: 6rem;
-  background-position: center center;
-  background-repeat: no-repeat;
-  background-image: url("./images/IconAction_Media_ShuffleOn_30x30.png");
-  background-size: 3rem;
+  line-height: 6rem;
   pointer-events: none;
+}
+
+html[dir="rtl"] .list-playlist-icon {
+  right: unset;
+  left: 2rem;
 }
 
 .list-song-index,
@@ -1088,35 +1122,18 @@ li.list-item a:active {
   border-bottom: solid 0.1rem rgba(255, 255, 255, 0.1);
 }
 
-.list-image-parent {
-  position: absolute;
-  right: 2.5rem;
-  top: 0;
-  height: 6rem;
-  width: 6rem;
-  overflow: hidden;
-  background-color: #8a9699;
-  box-shadow: 0 0 0.1rem black;
-  pointer-events: none;
-}
-
-.list-image {
-  position: absolute;
-}
-
-form[role="search"] {
-  background: url(/shared/style/headers/images/ui/dark/subheader.png);
-}
-
-form[role="search"] button {
-  background: url(/shared/style/headers/images/ui/dark/separator.png) no-repeat scroll 2rem center transparent;
-  border: none;
-  border-radius: 0;
-  padding: 0;
-  float: left;
-  width: calc(2rem + 2px);
-}
-
 .search-highlight {
   background-color: rgb(0, 138, 170);
+}
+
+#info-banner {
+  z-index: -1;
+  opacity: 0;
+  transition: all 600ms ease;
+}
+
+#info-banner.visible {
+  z-index: 100;
+  opacity: 1;
+  transition: all 600ms ease;
 }

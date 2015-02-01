@@ -1,13 +1,16 @@
 'use strict';
 
-requireApp('communications/contacts/js/fb/fb_contact_utils.js');
-requireApp('communications/contacts/js/fb/fb_contact.js');
-requireApp('communications/facebook/js/facebook_connector.js');
+require('/shared/js/contacts/import/facebook/fb_contact_utils.js');
+require('/shared/js/fb/fb_reader_utils.js');
+require('/shared/js/contacts/import/utilities/misc.js');
+require('/shared/js/contacts/import/facebook/fb_contact.js');
+require('/shared/js/contacts/import/facebook/facebook_connector.js');
 requireApp('communications/facebook/test/unit/mock_fb_graph_data.js');
 requireApp('communications/facebook/test/unit/mock_fb_query.js');
-requireApp('communications/contacts/js/import_utils.js');
+requireApp('communications/contacts/test/unit/mock_oauthflow.js');
 
 var realFbUtils,
+    realOauthflow,
     subject;
 
 if (!this.FacebookConnector) {
@@ -18,11 +21,19 @@ if (!this.fb) {
   this.fb = null;
 }
 
+if (!this.oauthflow) {
+  this.oauthflow = null;
+}
+
 suite('Facebook Connector Tests', function() {
   suiteSetup(function() {
     realFbUtils = window.fb.utils;
     window.fb.utils = MockFbQuery;
+
     subject = window.FacebookConnector;
+
+    realOauthflow = window.oauthflow;
+    window.oauthflow = MockOauthflow;
   });
 
 
@@ -57,10 +68,10 @@ suite('Facebook Connector Tests', function() {
         assert.equal(adapted.givenName[0], 'Carlos Angel');
         assert.equal(adapted.familyName[0], 'Bureta');
 
-        assert.equal(adapted.email[0].type[0], 'personal');
+        assert.equal(adapted.email[0].type[0], 'other');
         assert.equal(adapted.email[0].value, 'ppburetaxyz@gmail.com');
 
-        assert.equal(adapted.tel[0].type, 'personal');
+        assert.equal(adapted.tel[0].type[0], 'other');
         assert.equal(adapted.tel[0].value, '+34609274801');
 
         assert.equal(adapted.fbInfo.org[0], 'Telefonica');
@@ -69,6 +80,11 @@ suite('Facebook Connector Tests', function() {
         assert.equal(adapted.fbInfo.adr[0].locality, 'Valladolid');
         assert.equal(adapted.fbInfo.adr[0].region, 'Castilla y Leon');
         assert.equal(adapted.fbInfo.adr[0].countryName, 'Spain');
+
+        assert.equal(adapted.fbInfo.adr[1].type[0], 'current');
+        assert.equal(adapted.fbInfo.adr[1].locality, 'Greater London');
+        assert.equal(adapted.fbInfo.adr[1].region, 'London');
+        assert.equal(adapted.fbInfo.adr[1].countryName, 'United Kingdom');
 
         assert.equal(adapted.fbInfo.bday.getMonth(), 11);
         assert.equal(adapted.fbInfo.bday.getDate(), 3);
@@ -80,5 +96,6 @@ suite('Facebook Connector Tests', function() {
 
   suiteTeardown(function() {
     window.fb.utils = realFbUtils;
+    window.oauthflow = realOauthflow;
   });
 });

@@ -1,148 +1,269 @@
-/* -*- Mode: Java; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- /
-/* vim: set shiftwidth=2 tabstop=2 autoindent cindent expandtab: */
-
+/* global AirplaneMode, BaseModule */
 'use strict';
 
-var AirplaneMode = {
-  enabled: false,
+(function() {
+  // main
+  var AirplaneMode = function() {
+  };
+  AirplaneMode.SETTINGS = [
+    'airplaneMode.enabled'
+  ];
+  AirplaneMode.EVENTS = [
+    'radiostatechange',
+    'request-airplane-mode-enable',
+    'request-airplane-mode-disable'
+  ];
+  AirplaneMode.SUB_MODULES = [
+    'AirplaneModeServiceHelper'
+  ];
+  AirplaneMode.SERVICES = [
+    'registerNetwork',
+    'unregisterNetwork'
+  ];
+  AirplaneMode.STATES = [
+    'isActive'
+  ];
+  BaseModule.create(AirplaneMode, {
+    name: 'AirplaneMode',
 
-  init: function apm_init() {
-    if (!window.navigator.mozSettings)
-      return;
+    isActive: function() {
+      return this._enabled;
+    },
 
-    var settings = {
-      // mozSetting state for Data connection, Bluetooth, Wifi, GPS
-      'ril.data.enabled': false,
-      'bluetooth.enabled': false,
-      'wifi.enabled': false,
-      'geolocation.enabled': false,
+    /*
+     * This is an internal key to store current state of AirplaneMode
+     */
+    _enabled: undefined,
 
-      // remember the mozSetting states before the airplane mode disables them
-      'ril.data.suspended': false,
-      'bluetooth.suspended': false,
-      'wifi.suspended': false,
-      'geolocation.suspended': false
-    };
+    /*
+     * This is an event mapping table that will help us wait for
+     * specific event from its manager to make sure we are now
+     * in airplane mode or not.
+     */
+    _checkedActionsMap: {
+      wifi: {
+        enabled: 'wifi-enabled',
+        disabled: 'wifi-disabled'
+      },
+      bluetooth: {
+        enabled: 'bluetooth-adapter-added',
+        disabled: 'bluetooth-disabled'
+      },
+      radio: {
+        enabled: 'radio-enabled',
+        disabled: 'radio-disabled'
+      }
+    },
 
-    // observe the corresponding mozSettings
-    for (var key in settings) {
-      (function(settingID) {
-        SettingsListener.observe(settingID, false, function(value) {
-          settings[settingID] = value;
+    '_observe_airplaneMode.enabled': function(value) {
+      this.enabled = value;
+    },
+
+    /*
+     * If we are in airplane mode and the user just dial out an
+     * emergency call, we have to exit airplane mode.
+     */
+    _handle_radiostatechange: function(evt) {
+      if (evt.detail.state === 'enabled' && this._enabled === true) {
+        this.enabled = false;
+      }
+    },
+
+    '_handle_request-airplane-mode-enable': function() {
+      if (this.enabled === false) {
+        this.enabled = true;
+      }
+    },
+
+    '_handle_request-airplane-mode-disable': function() {
+      if (this.enabled === true) {
+        this.enabled = false;
+      }
+    },
+
+    _start: function() {
+      this._watchList = {};
+    },
+
+    _stop: function() {
+      this._watchList = {};
+    },
+
+    /*
+     * When turning on / off airplane mode, we will start watching
+     * needed events to make sure we are in airplane mode or not.
+     *
+     * @param {boolean} value
+     * @param {Object} checkedActions
+     */
+    watchEvents: function(value, checkedActions) {
+      var self = this;
+      // We don't want to wait until the first event reacts in order to
+      // update the status, because we can set the status to 'enabling' or
+      // 'disabling' already through `_updateAirplaneModeStatus`.
+      self._updateAirplaneModeStatus(checkedActions);
+      for (var serviceName in this._checkedActionsMap) {
+
+        // if we are waiting for specific service
+        if (serviceName in checkedActions) {
+          var action = value ? 'disabled' : 'enabled';
+          var eventName = this._checkedActionsMap[serviceName][action];
+
+          // then we will start watch events coming from its manager
+          window.addEventListener(eventName,
+            (function(eventName, serviceName) {
+              return function toUpdateAirplaneMode() {
+                self.debug('handling ' + eventName);
+                window.removeEventListener(eventName, toUpdateAirplaneMode);
+                checkedActions[serviceName] = true;
+                self._updateAirplaneModeStatus(checkedActions);
+              };
+          }(eventName, serviceName)));
+        }
+      }
+    },
+
+    /*
+     * In order to make sure all needed managers work successfully. We have to
+     * use this method to update airplaneMode related keys to tell
+     * AirplaneModeHelper our current states and is finised or not.
+     */
+    _updateAirplaneModeStatus: function(checkActions) {
+      var self = this;
+      var areAllActionsDone;
+
+      areAllActionsDone = this._areCheckedActionsAllDone(checkActions);
+
+      if (areAllActionsDone) {
+        this.debug('write settings...', this._enabled);
+        this.writeSetting({
+          'airplaneMode.enabled': this._enabled,
+          'airplaneMode.status': this._enabled ? 'enabled' : 'disabled',
+          // NOTE
+          // this is for backward compatibility,
+          // because we will update this value only when airplane mode
+          // is on / off, it will not affect apps using this value
+          'ril.radio.disabled': this._enabled
         });
-      })(key);
-    }
+      } else {
+        // keep updating the status to reflect current status
+        this.writeSetting({
+          'airplaneMode.status': this._enabled ? 'enabling' : 'disabling'
+        });
+      }
+    },
 
-    // turn off the mozSetting corresponding to `key'
-    // and remember its initial state by storing it in another setting
-    function suspend(key) {
-      var enabled = settings[key + '.enabled'];
-      var suspended = settings[key + '.suspended'];
-      if (suspended)
+    registerNetwork: function(network, handler) {
+      if (this._watchList[network]) {
         return;
-
-      // remember the state before switching it to false
-      var sset = {};
-      sset[key + '.suspended'] = enabled;
-      SettingsListener.getSettingsLock().set(sset);
-
-      // switch the state to false if necessary
-      if (enabled) {
-        var eset = {};
-        eset[key + '.enabled'] = false;
-        SettingsListener.getSettingsLock().set(eset);
       }
-    }
+      this._watchList[network] = handler;
+      this.debug(network + ' is registered.');
+    },
 
-    // turn on the mozSetting corresponding to `key'
-    // if it has been suspended by the airplane mode
-    function restore(key) {
-      var suspended = settings[key + '.suspended'];
-
-      // clear the 'suspended' state
-      var sset = {};
-      sset[key + '.suspended'] = false;
-      SettingsListener.getSettingsLock().set(sset);
-
-      // switch the state to true if it was suspended
-      if (suspended) {
-        var rset = {};
-        rset[key + '.enabled'] = true;
-        SettingsListener.getSettingsLock().set(rset);
+    unregisterNetwork: function(network) {
+      if (!this._watchList[network]) {
+        return;
       }
-    }
+      delete this._watchList[network];
+      this.debug(network + ' is unregistered.');
+    },
 
-    var bluetooth = window.navigator.mozBluetooth;
-    var wifiManager = window.navigator.mozWifiManager;
-    var mobileData = window.navigator.mozMobileConnection &&
-      window.navigator.mozMobileConnection.data;
-    var fmRadio = window.navigator.mozFMRadio;
+    /*
+     * By default, these three API takes longer time and with success / error
+     * callback. we just have to wait for these three items.
+     *
+     * @param {boolean} value
+     * @return {Object} checkedActions
+     */
+    _getCheckedActions: function(value) {
+      // we have to re-init all need-to-check managers
+      var checkedActions = {};
 
-    // Note that we don't restore Wifi tethering when leaving airplane mode
-    // because Wifi tethering can't be switched on before data connection is
-    // established.
-
-    var self = this;
-    SettingsListener.observe('ril.radio.disabled', false, function(value) {
-      if (value) {
-        // Entering airplane mode.
-        self.enabled = true;
-
-        // Turn off mobile data:
-        // we toggle the mozSettings value here just for the sake of UI,
-        // platform RIL disconnects mobile data when
-        // 'ril.radio.disabled' is true.
-        if (mobileData) {
-          suspend('ril.data');
+      if (value === true) {
+        // check connection
+        if (this._watchList.radio && this._watchList.radio.enabled) {
+          checkedActions.radio = false;
         }
 
-        // Turn off Bluetooth.
-        if (bluetooth) {
-          suspend('bluetooth');
+        // check bluetooth
+        if (this.airplaneModeServiceHelper.isEnabled('bluetooth')) {
+          checkedActions.bluetooth = false;
         }
 
-        // Turn off Wifi and Wifi tethering.
-        if (wifiManager) {
-          suspend('wifi');
-          SettingsListener.getSettingsLock().set({
-            'tethering.wifi.enabled': false
-          });
-        }
-
-        // Turn off Geolocation.
-        suspend('geolocation');
-
-        // Turn off FM Radio.
-        if (fmRadio && fmRadio.enabled) {
-          fmRadio.disable();
+        // check wifi
+        if (this.airplaneModeServiceHelper.isEnabled('wifi')) {
+          checkedActions.wifi = false;
         }
       } else {
-        // Leaving airplane mode.
-        self.enabled = false;
-
-        // Don't attempt to turn on mobile data if it's already on
-        if (mobileData && !settings['ril.data.enabled']) {
-          restore('ril.data');
+        // check connection
+        if (this._watchList.radio && !this._watchList.radio.enabled) {
+          checkedActions.radio = false;
         }
 
-        // Don't attempt to turn on Bluetooth if it's already on
-        if (bluetooth && !bluetooth.enabled) {
-          restore('bluetooth');
+        // check bluetooth
+        if (this.airplaneModeServiceHelper.isSuspended('bluetooth')) {
+          checkedActions.bluetooth = false;
         }
 
-        // Don't attempt to turn on Wifi if it's already on
-        if (wifiManager && !wifiManager.enabled) {
-          restore('wifi');
-        }
-
-        // Don't attempt to turn on Geolocation if it's already on
-        if (!settings['geolocation.enabled']) {
-          restore('geolocation');
+        // check wifi
+        if (this.airplaneModeServiceHelper.isSuspended('wifi')) {
+          checkedActions.wifi = false;
         }
       }
-    });
-  }
-};
 
-AirplaneMode.init();
+      return checkedActions;
+    },
 
+    /*
+     * We have to use this method to check whether all actions
+     * are done or not.
+     *
+     * @return {boolean}
+     */
+    _areCheckedActionsAllDone: function(checkedActions) {
+      this.debug('checking action is all done ?');
+      for (var key in checkedActions) {
+        if (checkedActions[key] === false) {
+          this.debug(key + '...not yet.');
+          return false;
+        }
+      }
+      this.debug('...all done');
+      return true;
+    }
+  }, {
+    enabled: {
+      configurable: false,
+      /*
+       * This is a ES5 feature that can help the others easily get/set
+       * AirplaneMode.
+       *
+       * @param {boolean} value
+       */
+      set: function(value) {
+        this.debug('current: ' + this._enabled);
+        if (value !== this._enabled) {
+          this.debug('turned to ' + value);
+          this._enabled = value;
+
+          // start watching events
+          this.watchEvents(value, this._getCheckedActions(value));
+
+          // tell services to do their own operations
+          this.airplaneModeServiceHelper.updateStatus(value);
+        }
+      },
+
+      /*
+       * This is a ES5 feature that can help the others easily get AirplaneMode
+       * states.
+       *
+       * @return {boolean}
+       */
+      get: function() {
+        return this._enabled;
+      }
+    }
+  });
+})();

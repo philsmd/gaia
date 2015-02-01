@@ -1,11 +1,16 @@
 /* -*- Mode: js; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- /
 /* vim: set shiftwidth=2 tabstop=2 autoindent cindent expandtab: */
 
+/*global Utils, WBMP, TextEncoder */
 
 (function() {
 'use strict';
 
-var runsafefilename = /[^a-zA-Z0-9.]/g;
+// characters not allowed in smil filenames
+var unsafeFilenamePattern = /[^a-zA-Z0-9_#.()?&%-]/g;
+
+// This encoder is aimed for encoding the string by 'utf-8'.
+var encoder = new TextEncoder('UTF-8');
 
 // For utilizing sending/receiving DOM API, we need to handle 2 basic object
 // first: SMIL document and attachment. SMIL document is used for
@@ -58,16 +63,23 @@ function SMIL_generateSlides(data, slide, slideIndex) {
   // each slide can have a piece of media and/or text
   var media = '';
   var text = '';
+  var name = '';
   if (slide.blob) {
     blobType = Utils.typeFromMimeType(slide.blob.type);
     if (blobType) {
-      // just to be safe, remove any non-standard characters from the filenam
-      id = slide.name.replace(runsafefilename, '');
-      id = SMIL_generateUniqueLocation(data, id);
-      media = '<' + blobType + ' src="' + id + '" region="Image"/>';
+      var region = 'region="Image"';
+      // For attachment type vcard the region is not set
+      if (blobType === 'ref' && slide.blob.type.startsWith('text')) {
+        region = '';
+      }
+      name = slide.name.substr(slide.name.lastIndexOf('/') + 1);
+      // just to be safe, remove any non-standard characters from the filename
+      name = name.replace(unsafeFilenamePattern, '#');
+      name = SMIL_generateUniqueLocation(data, name);
+      media = '<' + blobType + ' src="' + name + '" ' + region + '/>';
       data.attachments.push({
-        id: '<' + id + '>',
-        location: id,
+        id: '<' + name + '>',
+        location: name,
         content: slide.blob
       });
     }
@@ -76,10 +88,12 @@ function SMIL_generateSlides(data, slide, slideIndex) {
     // Set text region.
     id = 'text_' + slideIndex + '.txt';
     text = '<text src="' + id + '" region="Text"/>';
+
+    // The text of the content blob should always be encoded by 'utf-8'.
     data.attachments.push({
       id: '<' + id + '>',
       location: id,
-      content: new Blob([slide.text], {type: 'text/plain'})
+      content: new Blob([encoder.encode(slide.text)], {type: 'text/plain'})
     });
   }
   data.parts.push('<par dur="' + DURATION + 'ms">' + media + text + '</par>');
@@ -87,21 +101,55 @@ function SMIL_generateSlides(data, slide, slideIndex) {
 }
 
 function SMIL_generateUniqueLocation(data, location) {
+  var extension, name, result;
+
+  // Need to add reference spec here
+  var FILENAME_LIMIT = 40;
+
+  // if the location is already being used by the attachment
   function SMIL_uniqueLocationMatches(attachment) {
-    return attachment.location === location;
+    return attachment.location === result;
   }
-  var index;
+
+  // Check if a file extension exists
+  // Cache index of last non-extension portion of the filename
+  var index = location.lastIndexOf('.');
+  if (index === -1) {
+    name = location;
+    // Set to empty string so we can check length and append it to things
+    extension = '';
+  } else {
+    // Cache potential file extension
+    extension = location.slice(index);
+    name = location.slice(0, index);
+  }
+
+  // First truncate below the limit to make de-duplicating worthwhile
+  if (name.length + extension.length > FILENAME_LIMIT) {
+    name = name.slice(0, FILENAME_LIMIT - extension.length);
+  }
+  result = name + extension;
+
+  var duplicateIndex = 2;
+  // If result is identical to any other attached files
+  // add a duplicate marker and recheck the length
   while (data.attachments.some(SMIL_uniqueLocationMatches)) {
-    index = location.lastIndexOf('.');
-    if (index === -1) {
-      index = location.length;
+    var truncIndex = 0;
+    // Construct a de-deuplicated name with the extention and
+    // update duplicate index in case de-duplicated name is already chosen
+    result = name + '_' + duplicateIndex++ + extension;
+    // Truncate until the name (no longer needs to be de-duplicated)
+    // and extension are below the limit
+    while (result.length > FILENAME_LIMIT) {
+      duplicateIndex = 2;
+      name = name.slice(0, --truncIndex);
+      result = name + extension;
     }
-    location = location.slice(0, index) + '_' + location.slice(index);
   }
-  return location;
+  return result;
 }
 
-var SMIL = window.SMIL = {
+window.SMIL = {
 
   // SMIL.parse - takes a message from the DOM API's and converts to a
   // simple array format:
@@ -123,7 +171,7 @@ var SMIL = window.SMIL = {
     var slides = [];
     var activeReaders = 0;
     var attachmentsNotFound = false;
-    var workingText = [];
+    var smilMismatched = false;
     var doc;
     var parTags;
 
@@ -145,12 +193,14 @@ var SMIL = window.SMIL = {
         callback(event, '');
       };
       activeReaders++;
-      textReader.readAsText(blob);
+
+      // The text blob must be encoded as 'utf-8' by Gecko.
+      textReader.readAsText(blob, 'UTF-8');
     }
 
     function exitPoint() {
       if (!activeReaders) {
-        callback(slides);
+        setTimeout(callback.bind(null, slides));
       }
     }
 
@@ -170,44 +220,52 @@ var SMIL = window.SMIL = {
       return null;
     }
 
+    function convertWbmpToPng(slide) {
+      var reader;
+      slide.name = slide.name.slice(0, -5) + '.png';
+      reader = new FileReader();
+      reader.onload = function(event) {
+        WBMP.decode(event.target.result, function callback(blob) {
+          activeReaders--;
+          slide.blob = blob;
+          exitPoint();
+        });
+      };
+      reader.onerror = function(event) {
+        activeReaders--;
+        console.error('Error reading text blob');
+        exitPoint();
+      };
+      activeReaders++;
+      reader.readAsArrayBuffer(slide.blob);
+    }
+
     // handle mms messages without smil
-    // aggregate all text attachments into last slide
-    function SMIL_parseWithoutSMIL(attachment) {
-      var textIndex = workingText.length;
+    // Display the attachments of the mms message in order
+    function SMIL_parseWithoutSMIL(attachment, idx) {
       var blob = attachment.content;
       if (!blob) {
         return;
       }
       var type = Utils.typeFromMimeType(blob.type);
 
-      // handle text blobs by reading them and converting to text on the
-      // last slide
-      if (type === 'text') {
-        workingText.push('');
+      // handle text blobs (plain text blob only) by reading them and
+      // converting to text on the last slide
+      if (type === 'text' && blob.type === 'text/plain') {
         readTextBlob(blob, function SMIL_parseAttachmentRead(event, text) {
-          workingText[textIndex] = text;
-
-          // when the last reader finishs, we will join the text together
-          if (!activeReaders) {
-            text = workingText.join(' ');
-            if (slides.length) {
-              slides[slides.length - 1].text = text;
-            } else {
-              slides.push({
-                text: text
-              });
-            }
-            exitPoint();
-          }
+          slides[idx] = {
+            text: text
+          };
+          exitPoint();
         });
 
       // make sure the type was something we want, otherwise ignore it
       } else if (type) {
-        slides.push({
-          name: attachment.location ||
-                attachment.id.replace(runsafefilename, ''),
-          blob: attachment.content
-        });
+        var slide = { name: attachment.location, blob: attachment.content };
+        if (slide.name && slide.name.slice(-5) === '.wbmp') {
+          convertWbmpToPng(slide);
+        }
+        slides[idx] = slide;
       }
     }
 
@@ -217,28 +275,46 @@ var SMIL = window.SMIL = {
         return;
       }
 
-      var mediaElement = par.querySelector('img, video, audio');
+      var mediaElements = par.querySelectorAll('img, video, audio, ref');
       var textElement = par.querySelector('text');
-      var slide = {};
-      var attachment;
-      var src;
+      var attachment, src;
 
-      slides.push(slide);
-      if (mediaElement) {
-        src = mediaElement.getAttribute('src');
+      Array.prototype.forEach.call(mediaElements, function setSlide(element) {
+        var slide = {};
+        src = element.getAttribute('src');
         attachment = findAttachment(src);
         if (attachment) {
-          slide.name = attachment.location ||
-                       attachment.id.replace(runsafefilename, '');
-          slide.blob = attachment.content;
+          // every media attachment starts its own slide in our format
+          slide = { name: attachment.location, blob: attachment.content };
+          slides.push(slide);
+          if (slide.name && slide.name.slice(-5) === '.wbmp') {
+            convertWbmpToPng(slide);
+          }
         } else {
           attachmentsNotFound = true;
         }
-      }
+      });
+
       if (textElement) {
         src = textElement.getAttribute('src');
         attachment = findAttachment(src);
+
         if (attachment) {
+
+          // check for text on the last slide
+          var slide = slides[slides.length - 1];
+
+          // if the last slide doesn't exist, or the last slide has text
+          // already, we create a new slide to store the text
+          if (!slide || typeof slide.text !== 'undefined') {
+            slide = {};
+            slides.push(slide);
+          }
+          // Init slide text to avoid text replaced by later blob
+          slide.text = '';
+
+          // read the text blob, and store it in the "slide" this function
+          // will hold onto
           readTextBlob(attachment.content,
             function SMIL_parseSMILAttachmentRead(event, text) {
               slide.text = text;
@@ -255,13 +331,23 @@ var SMIL = window.SMIL = {
     if (smil) {
       doc = (new DOMParser()).parseFromString(smil, 'application/xml');
       parTags = doc.documentElement.getElementsByTagName('par');
-      Array.prototype.forEach.call(parTags, SMIL_parseHandleParTag);
+
+      // Check if attachments are all listed in smil.
+      var elements = Array.reduce(
+        parTags, (count, par) => count + par.childElementCount, 0
+      );
+
+      if (elements !== attachments.length) {
+        smilMismatched = true;
+      } else {
+        Array.prototype.forEach.call(parTags, SMIL_parseHandleParTag);
+      }
     }
 
     // handle MMS attachments without SMIL / malformed SMIL
-    if (!smil || attachmentsNotFound || !slides.length) {
+    if (!smil || attachmentsNotFound || !slides.length || smilMismatched) {
       // reset slides in the attachments not found case
-      slides = [];
+      slides = Array(attachments.length);
       attachments.forEach(SMIL_parseWithoutSMIL);
     }
     exitPoint();

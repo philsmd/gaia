@@ -1,12 +1,18 @@
-requireLib('provider/abstract.js');
-requireLib('template.js');
-requireLib('templates/alarm.js');
+/* global suiteTemplate */
+define(function(require) {
+'use strict';
 
-suiteGroup('Views.ViewEvent', function() {
+var EventBase = require('views/event_base');
+var View = require('view');
+var ViewEvent = require('views/view_event');
+var providerFactory = require('provider/provider_factory');
+var app = require('app');
 
+require('dom!show_event');
+
+suite('Views.ViewEvent', function() {
   var subject;
   var controller;
-  var app;
 
   var event;
   var account;
@@ -19,10 +25,6 @@ suiteGroup('Views.ViewEvent', function() {
   var calendarStore;
   var accountStore;
 
-  function hasClass(value) {
-    return subject.element.classList.contains(value);
-  }
-
   function getEl(name) {
     return subject.getEl(name);
   }
@@ -33,9 +35,7 @@ suiteGroup('Views.ViewEvent', function() {
   }
 
   var triggerEvent;
-  var InputParser;
   suiteSetup(function() {
-    InputParser = Calendar.Utils.InputParser;
     triggerEvent = testSupport.calendar.triggerEvent;
   });
 
@@ -43,61 +43,26 @@ suiteGroup('Views.ViewEvent', function() {
   var realGo;
 
   teardown(function() {
-    Calendar.App.go = realGo;
-    var el = document.getElementById('test');
-    el.parentNode.removeChild(el);
-    delete app._providers.Test;
+    app.go = realGo;
+    delete providerFactory.providers.Test;
+  });
+
+  suiteTemplate('show-event', {
+    id: 'event-view'
   });
 
   setup(function(done) {
-    realGo = Calendar.App.go;
-    var div = document.createElement('div');
-    div.id = 'test';
-    div.innerHTML = [
-      '<div id="event-view">',
-        '<button class="edit">edit</button>',
-        '<button class="cancel">cancel</button>',
-          '<div class="title">',
-            '<span class="content"></span>',
-          '</div>',
-          '<div class="location">',
-            '<span class="content"></span>',
-          '</div>',
-          '<div class="current-calendar">',
-            '<span class="content"></span>',
-          '</div>',
-          '<div class="start-date">',
-            '<span class="content"></span>',
-            '<span class="start-time">',
-              '<span class="content"></span>',
-            '</span>',
-          '</div>',
-          '<div class="end-date">',
-            '<span class="content"></span>',
-            '<span class="end-time">',
-              '<span class="content"></span>',
-            '</span>',
-          '</div>',
-          '<div class="alarms">',
-            '<span class="content"></span>',
-          '</div>',
-          '<div class="description">',
-            '<span class="content"></span>',
-          '</div>',
-      '</div>'
-    ].join('');
-
-    document.body.appendChild(div);
+    realGo = app.go;
     app = testSupport.calendar.app();
 
     eventStore = app.store('Event');
     accountStore = app.store('Account');
     calendarStore = app.store('Calendar');
-    provider = app.provider('Mock');
+    provider = providerFactory.get('Mock');
 
     controller = app.timeController;
 
-    subject = new Calendar.Views.ViewEvent({
+    subject = new ViewEvent({
       app: app
     });
 
@@ -129,12 +94,6 @@ suiteGroup('Views.ViewEvent', function() {
     }
   );
 
-  var remote;
-  var event;
-  var calendar;
-  var account;
-  var busytime;
-
   setup(function() {
     remote = this.event.remote;
     event = this.event;
@@ -144,8 +103,8 @@ suiteGroup('Views.ViewEvent', function() {
   });
 
   test('initialization', function() {
-    assert.instanceOf(subject, Calendar.View);
-    assert.instanceOf(subject, Calendar.Views.EventBase);
+    assert.instanceOf(subject, View);
+    assert.instanceOf(subject, EventBase);
     assert.equal(subject._changeToken, 0);
 
     assert.ok(subject._els, 'has elements');
@@ -155,8 +114,8 @@ suiteGroup('Views.ViewEvent', function() {
     assert.ok(subject.primaryButton);
   });
 
-  test('.cancelButton', function() {
-    assert.ok(subject.cancelButton);
+  test('.header', function() {
+    assert.ok(subject.header);
   });
 
   test('.fieldRoot', function() {
@@ -181,7 +140,7 @@ suiteGroup('Views.ViewEvent', function() {
   test('#_getEl', function() {
     var expected = subject.fieldRoot.querySelector('.title');
     assert.ok(expected);
-    assert.equal(expected.tagName.toLowerCase(), 'div');
+    assert.equal(expected.tagName.toLowerCase(), 'li');
 
     var result = subject.getEl('title');
 
@@ -202,10 +161,6 @@ suiteGroup('Views.ViewEvent', function() {
       var expected = {
         title: remote.title,
         location: remote.location,
-        startDate: subject.formatDate(remote.startDate),
-        startTime: subject.formatTime(remote.startDate),
-        endDate: subject.formatDate(remote.endDate),
-        endTime: subject.formatTime(remote.endDate),
         currentCalendar: calendar.remote.name,
         description: remote.description
       };
@@ -215,10 +170,8 @@ suiteGroup('Views.ViewEvent', function() {
         'endTime'
       ];
 
-      var key;
-
       if (overrides) {
-        for (key in overrides) {
+        for (var key in overrides) {
           expected[key] = overrides[key];
         }
       }
@@ -228,10 +181,10 @@ suiteGroup('Views.ViewEvent', function() {
           expected.calendarId = event.calendarId;
         }
 
-        for (key in expected) {
+        function replaceCaps($1) { return '-' + $1.toLowerCase(); }
+        for (var key in expected) {
 
           // To dash-delimited
-          function replaceCaps($1) { return '-' + $1.toLowerCase(); }
           var fieldKey = key.replace(/([A-Z])/g, replaceCaps);
 
           if (isAllDay && allDayHidden.indexOf(key) !== -1) {
@@ -283,17 +236,6 @@ suiteGroup('Views.ViewEvent', function() {
       );
     });
 
-    test('when start & end times are 00:00:00', function(done) {
-      remote.startDate = new Date(2012, 0, 1);
-      remote.endDate = new Date(2012, 0, 2);
-
-      updatesValues(
-        { endDate: '01/01/2012' },
-        true,
-        done
-      );
-    });
-
     test('alarms are displayed', function(done) {
 
       event.remote.alarms = [
@@ -312,23 +254,16 @@ suiteGroup('Views.ViewEvent', function() {
         );
 
         assert.equal(
-          alarmChildren[0].textContent,
+          alarmChildren[0].textContent.trim(),
           navigator.mozL10n.get('alarm-at-event-standard')
         );
         assert.equal(
-          alarmChildren[1].textContent,
+          alarmChildren[1].textContent.trim(),
           navigator.mozL10n.get('minutes-before', {value: 1})
         );
 
         done();
       });
-    });
-  });
-
-  suite('#formatTime', function() {
-    test('returns empty if invalid', function() {
-      var result = subject.formatTime();
-      assert.equal('', result);
     });
   });
 
@@ -342,7 +277,7 @@ suiteGroup('Views.ViewEvent', function() {
 
       subject._returnTop = '/foo';
 
-      triggerEvent(subject.cancelButton, 'click');
+      triggerEvent(subject.header, 'action');
     });
 
     test('cancel button return top', function(done) {
@@ -354,7 +289,7 @@ suiteGroup('Views.ViewEvent', function() {
 
       subject._returnTo = '/bar';
 
-      triggerEvent(subject.cancelButton, 'click');
+      triggerEvent(subject.header, 'action');
     });
 
     test('edit button click', function(done) {
@@ -371,4 +306,6 @@ suiteGroup('Views.ViewEvent', function() {
       triggerEvent(subject.primaryButton, 'click');
     });
   });
+});
+
 });

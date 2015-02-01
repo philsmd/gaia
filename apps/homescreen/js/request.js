@@ -19,7 +19,16 @@ var ConfirmDialog = (function() {
 
   return {
     hide: function dialog_hide() {
-      dialog.classList.remove('visible');
+      cancelButton.onclick = confirmButton.onclick = null;
+
+      var classList = dialog.classList;
+      if (classList.contains('show')) {
+        dialog.addEventListener('transitionend', function transitionend() {
+          dialog.removeEventListener('transitionend', transitionend);
+          classList.remove('visible');
+        });
+        classList.remove('show');
+      }
     },
 
     show: function dialog_show(title, msg, cancel, confirm) {
@@ -39,14 +48,76 @@ var ConfirmDialog = (function() {
         confirmButton.classList.add(confirm.applyClass);
       }
 
-      cancelButton.onclick = confirmButton.onclick = clickHandler;
-
       function clickHandler(evt) {
         evt.target === confirmButton ? confirm.callback() : cancel.callback();
         return false;
       }
 
       dialog.classList.add('visible');
+      setTimeout(function animate() {
+        dialog.addEventListener('transitionend', function transitionend() {
+          dialog.removeEventListener('transitionend', transitionend);
+          cancelButton.onclick = confirmButton.onclick = clickHandler;
+        });
+        dialog.classList.add('show');
+      }, 50); // Give the opportunity to paint the UI component
+    },
+
+    showApp: function dialog_showApp(icon) {
+      var title, body, app = icon.app;
+
+      var cancel = {
+        title: navigator.mozL10n.get('cancel'),
+        callback: function onCancel() {
+          ConfirmDialog.hide();
+          var evt = new CustomEvent('confirmdialog', {
+            'detail': {
+              'action': 'cancel',
+              'app': app
+            }
+          });
+          window.dispatchEvent(evt);
+        }
+      };
+
+      var confirm = {
+        callback: function onAccept() {
+          ConfirmDialog.hide();
+          if (app.type === GridItemsFactory.TYPE.COLLECTION) {
+            app.uninstall();
+          } else {
+            navigator.mozApps.mgmt.uninstall(app);
+          }
+
+          var evt = new CustomEvent('confirmdialog', {
+            'detail': {
+              'action': 'confirm',
+              'app': app
+            }
+          });
+          window.dispatchEvent(evt);
+        },
+        applyClass: 'danger'
+      };
+
+      // Show a different prompt if the user is trying to remove
+      // a bookmark shortcut instead of an app.
+      var nameObj = {
+        name: icon.getName()
+      };
+
+      if (app.type === GridItemsFactory.TYPE.COLLECTION) {
+        title = navigator.mozL10n.get('remove-title-2', nameObj);
+        body = navigator.mozL10n.get('remove-body', nameObj);
+        confirm.title = navigator.mozL10n.get('remove');
+      } else {
+        // Make sure to get the localized name
+        title = navigator.mozL10n.get('delete-title', nameObj);
+        body = navigator.mozL10n.get('delete-body', nameObj);
+        confirm.title = navigator.mozL10n.get('delete');
+      }
+
+      this.show(title, body, cancel, confirm);
     },
 
     init: initialize

@@ -6,10 +6,11 @@
  * ---------------------------------- */
 
 [role="dialog"] p {
-  font-weight: lighter;
+  font-weight: 300;
   font-size: 2.2rem;
   color: #FAFAFA;
-  margin: 0;
+  margin: 1rem 0 0 0;
+  padding: 1rem 1.5rem;
 }
 
 [role="dialog"] p:last-child {
@@ -19,7 +20,7 @@
 }
 
 [role="dialog"] .content {
-  font-weight: lighter;
+  font-weight: 300;
   font-size: 2.2rem;
   color: #fff;
   border-bottom: 0.1rem solid #777;
@@ -33,7 +34,7 @@
 }
 
 [role="dialog"] .content strong {
-  font-weight: lighter;
+  font-weight: 300;
 }
 
 [role="dialog"] .content small {
@@ -41,4 +42,10 @@
   font-weight: normal;
   color: #cbcbcb;
   display: block;
+}
+
+/* Since considering 20px height of status bar,
+   overwrite padding top which is defined in shared/style/confirm.css*/
+form[role="dialog"][data-type="confirm"] {
+  padding: 2rem 0 7rem;
 }

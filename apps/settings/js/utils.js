@@ -4,26 +4,6 @@
 'use strict';
 
 /**
- * Constants
- */
-
-var DEBUG = false;
-
-/**
- * Debug method
- */
-
-function debug(msg, optObject) {
-  if (DEBUG) {
-    var output = '[DEBUG # Settings] ' + msg;
-    if (optObject) {
-      output += JSON.stringify(optObject);
-    }
-    console.log(output);
-  }
-}
-
-/**
  * Move settings to foreground
  */
 
@@ -63,12 +43,15 @@ function openDialog(dialogID, onSubmit, onReset) {
     return;
 
   var origin = Settings.currentPanel;
-  var dialog = document.getElementById(dialogID);
 
+  // Load dialog contents and show it.
+  Settings.currentPanel = dialogID;
+
+  var dialog = document.getElementById(dialogID);
   var submit = dialog.querySelector('[type=submit]');
   if (submit) {
     submit.onclick = function onsubmit() {
-      if (onSubmit)
+      if (typeof onSubmit === 'function')
         (onSubmit.bind(dialog))();
       Settings.currentPanel = origin; // hide dialog box
     };
@@ -77,83 +60,90 @@ function openDialog(dialogID, onSubmit, onReset) {
   var reset = dialog.querySelector('[type=reset]');
   if (reset) {
     reset.onclick = function onreset() {
-      if (onReset)
+      if (typeof onReset === 'function')
         (onReset.bind(dialog))();
       Settings.currentPanel = origin; // hide dialog box
     };
   }
-
-  Settings.currentPanel = dialogID; // show dialog box
 }
 
-/**
- * Audio Preview
- * First click = play, second click = pause.
- */
-
-function audioPreview(element, type) {
-  var audio = document.querySelector('#sound-selection audio');
-  var source = audio.src;
-  var playing = !audio.paused;
-
-  // Both ringer and notification are using notification channel
-  audio.mozAudioChannelType = 'notification';
-
-  var url = '/shared/resources/media/' + type + '/' +
-            element.querySelector('input').value;
-  audio.src = url;
-  if (source === audio.src && playing) {
-    audio.pause();
-    audio.src = '';
-  } else {
-    audio.play();
-  }
-}
-
-/**
- * JSON loader
- */
-
-function loadJSON(href, callback) {
-  if (!callback)
-    return;
-  var xhr = new XMLHttpRequest();
-  xhr.onerror = function() {
-    console.error('Failed to fetch file: ' + href, xhr.statusText);
+function openIncompatibleSettingsDialog(dialogId, newSetting,
+  oldSetting, callback) {
+  var headerL10nMap = {
+    'ums.enabled': 'is-warning-storage-header',
+    'tethering.usb.enabled': 'is-warning-tethering-header',
+    'tethering.wifi.enabled': 'is-warning-wifi-header'
   };
-  xhr.onload = function() {
-    callback(xhr.response);
+  var messageL10nMap = {
+    'ums.enabled': {
+      'tethering.usb.enabled': 'is-warning-storage-tethering-message'
+    },
+    'tethering.usb.enabled': {
+      'ums.enabled': 'is-warning-tethering-storage-message',
+      'tethering.wifi.enabled': 'is-warning-tethering-wifi-message'
+    },
+    'tethering.wifi.enabled': {
+      'tethering.usb.enabled': 'is-warning-wifi-tethering-message'
+    }
   };
-  xhr.open('GET', href, true); // async
-  xhr.responseType = 'json';
-  xhr.send();
-}
 
-/**
- * L10n helper
- */
+  var headerL10n = headerL10nMap[newSetting];
+  var messageL10n =
+    messageL10nMap[newSetting] && messageL10nMap[newSetting][oldSetting];
 
-function localize(element, id, args) {
-  var mozL10n = navigator.mozL10n;
-  if (!element || !mozL10n)
-    return;
+  var dialogElement = document.querySelector('.incompatible-settings-dialog'),
+    dialogHead = document.querySelector('.is-warning-head'),
+    dialogMessage = document.querySelector('.is-warning-message'),
+    okBtn = document.querySelector('.incompatible-settings-ok-btn'),
+    cancelBtn = document.querySelector('.incompatible-settings-cancel-btn'),
+    mozL10n = navigator.mozL10n;
 
-  if (id) {
-    element.dataset.l10nId = id;
-  } else {
-    element.dataset.l10nId = '';
-    element.textContent = '';
+  dialogHead.setAttribute('data-l10n-id', headerL10n);
+  dialogMessage.setAttribute('data-l10n-id', messageL10n);
+
+  // User has requested enable the feature so the old feature
+  // must be disabled
+  function onEnable(evt) {
+    evt.preventDefault();
+    var lock = Settings.mozSettings.createLock();
+    var cset = {};
+
+    cset[newSetting] = true;
+    cset[oldSetting] = false;
+    lock.set(cset);
+
+    enableDialog(false);
+
+    if (callback) {
+      callback();
+    }
   }
 
-  if (args) {
-    element.dataset.l10nArgs = JSON.stringify(args);
-  } else {
-    element.dataset.l10nArgs = '';
+  function onCancel(evt) {
+    evt.preventDefault();
+    var lock = Settings.mozSettings.createLock();
+    var cset = {};
+
+    cset[newSetting] = false;
+    cset[oldSetting] = true;
+    lock.set(cset);
+
+    enableDialog(false);
   }
 
-  mozL10n.ready(function l10nReady() {
-    mozL10n.translate(element);
-  });
+  var enableDialog = function enableDialog(enabled) {
+    if (enabled) {
+      okBtn.addEventListener('click', onEnable);
+      cancelBtn.addEventListener('click', onCancel);
+      dialogElement.hidden = false;
+    } else {
+      okBtn.removeEventListener('click', onEnable);
+      cancelBtn.removeEventListener('click', onCancel);
+      dialogElement.hidden = true;
+    }
+  };
+
+  enableDialog(true);
 }
 
 /**
@@ -162,23 +152,23 @@ function localize(element, id, args) {
  */
 
 var FileSizeFormatter = (function FileSizeFormatter(fixed) {
-  function getReadableFileSize(size, digits) { // in: size in Bytes
-    if (size === undefined)
+  function getReadableFileSize(bytes, digits) { // in: size in Bytes
+    if (bytes === undefined)
       return {};
 
     var units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB', 'EB', 'ZB', 'YB'];
-    var i = 0;
-    while (size >= 1024) {
-      size /= 1024;
-      ++i;
+    var size, e;
+    if (bytes) {
+      e = Math.floor(Math.log(bytes) / Math.log(1024));
+      size = (bytes / Math.pow(1024, e)).toFixed(digits || 0);
+    } else {
+      e = 0;
+      size = '0';
     }
 
-    var sizeString = size.toFixed(digits || 0);
-    var sizeDecimal = parseFloat(sizeString);
-
     return {
-      size: sizeDecimal.toString(),
-      unit: units[i]
+      size: size,
+      unit: units[e]
     };
   }
 
@@ -191,252 +181,117 @@ var FileSizeFormatter = (function FileSizeFormatter(fixed) {
  */
 
 var DeviceStorageHelper = (function DeviceStorageHelper() {
-  function getStat(type, callback) {
-    var deviceStorage = navigator.getDeviceStorage(type);
-
-    if (!deviceStorage) {
-      console.error('Cannot get DeviceStorage for: ' + type);
-      return;
-    }
-    deviceStorage.freeSpace().onsuccess = function(e) {
-      var freeSpace = e.target.result;
-      deviceStorage.usedSpace().onsuccess = function(e) {
-        var usedSpace = e.target.result;
-        callback(usedSpace, freeSpace, type);
-      };
-    };
-  }
-
-  function getFreeSpace(callback) {
-    var deviceStorage = navigator.getDeviceStorage('sdcard');
-
-    if (!deviceStorage) {
-      console.error('Cannot get free space size in sdcard');
-      return;
-    }
-    deviceStorage.freeSpace().onsuccess = function(e) {
-      var freeSpace = e.target.result;
-      callback(freeSpace);
-    };
-  }
-
   function showFormatedSize(element, l10nId, size) {
     if (size === undefined || isNaN(size)) {
       element.textContent = '';
       return;
     }
 
-    // KB - 3 KB (nearest ones), MB, GB - 1.2 MB (nearest tenth)
-    var fixedDigits = (size < 1024 * 1024) ? 0 : 1;
+    // KB - 3 KB (nearest ones), MB, GB - 1.29 MB (nearest hundredth)
+    var fixedDigits = (size < 1024 * 1024) ? 0 : 2;
     var sizeInfo = FileSizeFormatter.getReadableFileSize(size, fixedDigits);
 
     var _ = navigator.mozL10n.get;
-    element.textContent = _(l10nId, {
-      size: sizeInfo.size,
-      unit: _('byteUnit-' + sizeInfo.unit)
-    });
+    navigator.mozL10n.setAttributes(element,
+                                    l10nId,
+                                    {
+                                      size: sizeInfo.size,
+                                      unit: _('byteUnit-' + sizeInfo.unit)
+                                    });
   }
 
   return {
-    getStat: getStat,
-    getFreeSpace: getFreeSpace,
     showFormatedSize: showFormatedSize
   };
 })();
 
 /**
- * This emulates <input type="range"> elements on Gecko until they get
- * supported natively.  To be removed when bug 344618 lands.
- * https://bugzilla.mozilla.org/show_bug.cgi?id=344618
+ * The function returns an object of the supporting state of category of network
+ * types. The categories are 'gsm', 'cdma', and 'lte'.
  */
+(function(exports) {
+  var supportedNetworkTypeHelpers = [];
 
-function bug344618_polyfill() {
-  var range = document.createElement('input');
-  range.type = 'range';
-  if (range.type == 'range') {
-    // In some future version of gaia that will only be used with gecko v23+,
-    // we can remove the bug344618_polyfill stuff.
-    console.warn("bug344618 has landed, there's some dead code to remove.");
-    var sel = 'label:not(.without_bug344618_polyfill) > input[type="range"]';
-    var ranges = document.querySelectorAll(sel);
-    for (var i = 0; i < ranges.length; i++) {
-      var label = ranges[i].parentNode;
-      label.classList.add('without_bug344618_polyfill');
+  var helperFuncReady = function(callback) {
+    if (exports.SupportedNetworkTypeHelper) {
+      if (typeof callback === 'function') {
+        callback();
+      }
+    } else {
+      LazyLoader.load(['js/supported_network_type_helper.js'], function() {
+        if (typeof callback === 'function') {
+          callback();
+        }
+      });
     }
-    return; // <input type="range"> is already supported, early way out.
-  }
-
-  /**
-   * The JS polyfill transforms this:
-   *
-   *   <label>
-   *     <input type="range" value="60" />
-   *   </label>
-   *
-   * into this:
-   *
-   *   <label class="bug344618_polyfill">
-   *     <div>
-   *       <span style="width: 60%"></span>
-   *       <span style="left: 60%"></span>
-   *     </div>
-   *     <input type="range" value="60" />
-   *   </label>
-   *
-   * JavaScript-wise, two main differences between this polyfill and the
-   * standard implementation:
-   *   - the `.type' property equals `text' instead of `range';
-   *   - the value is a string, not a float.
-   */
-
-  var polyfill = function(input) {
-    input.dataset.type = 'range';
-
-    var slider = document.createElement('div');
-    var thumb = document.createElement('span');
-    var fill = document.createElement('span');
-    var label = input.parentNode;
-    slider.appendChild(fill);
-    slider.appendChild(thumb);
-    label.insertBefore(slider, input);
-    label.classList.add('bug344618_polyfill');
-
-    var min = parseFloat(input.min);
-    var max = parseFloat(input.max);
-
-    // move the throbber to the proper position, according to input.value
-    var refresh = function refresh() {
-      var pos = (input.value - min) / (max - min);
-      pos = Math.max(pos, 0);
-      pos = Math.min(pos, 1);
-      fill.style.width = (100 * pos) + '%';
-      thumb.style.left = (100 * pos) + '%';
-    };
-
-    // move the throbber to the proper position, according to mouse events
-    var updatePosition = function updatePosition(event) {
-      var pointer = event.changedTouches && event.changedTouches[0] ?
-                    event.changedTouches[0] :
-                    event;
-      var rect = slider.getBoundingClientRect();
-      var pos = (pointer.clientX - rect.left) / rect.width;
-      pos = Math.max(pos, 0);
-      pos = Math.min(pos, 1);
-      fill.style.width = (100 * pos) + '%';
-      thumb.style.left = (100 * pos) + '%';
-      input.value = min + pos * (max - min);
-    };
-
-    // send a 'change' event
-    var notify = function notify() {
-      var evtObject = document.createEvent('Event');
-      evtObject.initEvent('change', true, false);
-      input.dispatchEvent(evtObject);
-    };
-
-    // user interaction support
-    var isDragging = false;
-    var onDragStart = function onDragStart(event) {
-      updatePosition(event);
-      isDragging = true;
-    };
-    var onDragMove = function onDragMove(event) {
-      if (isDragging) {
-        updatePosition(event);
-        // preventDefault prevents vertical scrolling
-        event.preventDefault();
-      }
-    };
-    var onDragStop = function onDragStop(event) {
-      if (isDragging) {
-        updatePosition(event);
-        notify();
-      }
-      isDragging = false;
-    };
-    var onClick = function onClick(event) {
-      updatePosition(event);
-      notify();
-    };
-
-    slider.addEventListener('mousedown', onClick);
-    slider.addEventListener('touchstart', onClick);
-    thumb.addEventListener('mousedown', onDragStart);
-    thumb.addEventListener('touchstart', onDragStart);
-    label.addEventListener('mousemove', onDragMove);
-    label.addEventListener('touchmove', onDragMove);
-    label.addEventListener('mouseup', onDragStop);
-    label.addEventListener('touchend', onDragStop);
-    label.addEventListener('touchcancel', onDragStop);
-
-    // expose the 'refresh' method on <input>
-    // XXX remember to call it after setting input.value manually...
-    input.refresh = refresh;
   };
 
-  // apply to all input[type="range"] elements
-  var selector = 'label:not(.bug344618_polyfill) > input[type="range"]';
-  var ranges = document.querySelectorAll(selector);
-  for (var i = 0; i < ranges.length; i++) {
-    polyfill(ranges[i]);
+  var getMobileConnectionIndex = function(mobileConnection) {
+    return Array.prototype.indexOf.call(navigator.mozMobileConnections,
+      mobileConnection);
+  };
+
+  var getSupportedNetworkInfo = function(mobileConnection, callback) {
+    if (!navigator.mozMobileConnections) {
+      if (typeof callback === 'function') {
+        callback();
+      }
+    }
+
+    helperFuncReady(function ready() {
+      var index = getMobileConnectionIndex(mobileConnection);
+      var supportedNetworkTypeHelper = supportedNetworkTypeHelpers[index];
+      if (!supportedNetworkTypeHelper) {
+        supportedNetworkTypeHelpers[index] = supportedNetworkTypeHelper =
+          SupportedNetworkTypeHelper(mobileConnection.supportedNetworkTypes);
+      }
+      if (typeof callback === 'function') {
+        callback(supportedNetworkTypeHelper);
+      }
+    });
+  };
+
+  exports.getSupportedNetworkInfo = getSupportedNetworkInfo;
+})(this);
+
+function isIP(address) {
+  return /^\d+\.\d+\.\d+\.\d+$/.test(address);
+}
+
+// Remove additional 0 in front of IP digits.
+// Notice that this is not following standard dot-decimal notation, just for
+// possible error tolarance.
+// (Values starting with 0 stand for octal representation by standard)
+function sanitizeAddress(input) {
+  if (isIP(input)) {
+    return input.replace(/0*(\d+)/g, '$1');
+  } else {
+    return input;
   }
 }
 
 /**
- * Connectivity accessors
+ * Retrieve current ICC by a given index. If no index is provided, it will
+ * use the index provided by `DsdsSettings.getIccCardIndexForCallSettings`,
+ * which is the default. Unless there are very specific reasons to provide an
+ * index, this function should always be invoked with no parameters in order to
+ * use the currently selected ICC index.
+ *
+ * @param {Number} index index of the mobile connection to get the ICC from
+ * @return {object}
  */
+function getIccByIndex(index) {
+  if (index === undefined) {
+    index = DsdsSettings.getIccCardIndexForCallSettings();
+  }
+  var iccObj;
 
-// create a fake mozMobileConnection if required (e.g. desktop browser)
-var getMobileConnection = function() {
-  var navigator = window.navigator;
-  if (('mozMobileConnection' in navigator) &&
-      navigator.mozMobileConnection &&
-      navigator.mozMobileConnection.data)
-    return navigator.mozMobileConnection;
-
-  var initialized = false;
-  var fakeICCInfo = { shortName: 'Fake Free-Mobile', mcc: '208', mnc: '15' };
-  var fakeNetwork = { shortName: 'Fake Orange F', mcc: '208', mnc: '1' };
-  var fakeVoice = {
-    state: 'notSearching',
-    roaming: true,
-    connected: true,
-    emergencyCallsOnly: false
-  };
-
-  function fakeEventListener(type, callback, bubble) {
-    if (initialized)
-      return;
-
-    // simulates a connection to a data network;
-    setTimeout(function fakeCallback() {
-      initialized = true;
-      callback();
-    }, 5000);
+  if (navigator.mozMobileConnections[index]) {
+    var iccId = navigator.mozMobileConnections[index].iccId;
+    if (iccId) {
+      iccObj = navigator.mozIccManager.getIccById(iccId);
+    }
   }
 
-  return {
-    addEventListener: fakeEventListener,
-    iccInfo: fakeICCInfo,
-    get data() {
-      return initialized ? { network: fakeNetwork } : null;
-    },
-    get voice() {
-      return initialized ? fakeVoice : null;
-    }
-  };
-};
-
-var getBluetooth = function() {
-  var navigator = window.navigator;
-  if ('mozBluetooth' in navigator)
-    return navigator.mozBluetooth;
-  return {
-    enabled: false,
-    addEventListener: function(type, callback, bubble) {},
-    onenabled: function(event) {},
-    onadapteradded: function(event) {},
-    ondisabled: function(event) {},
-    getDefaultAdapter: function() {}
-  };
-};
+  return iccObj;
+}
